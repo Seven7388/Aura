@@ -1,0 +1,1041 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==============================================="
+echo "   Unida DNSTT Server Installer (clean + stable)"
+echo "==============================================="
+
+# Root check
+if [ "$(id -u)" -ne 0 ]; then
+  echo "[-] Tafadhali run kama root: sudo bash $0"
+  exit 1
+fi
+
+# Default values
+TDOMAIN=""
+MTU="${MTU:-1232}"
+DNSTT_PORT="5300"
+PROXY_PORT="53"
+
+# Parse flags
+while getopts "d:m:p:h" opt; do
+  case $opt in
+    d) TDOMAIN="$OPTARG" ;;
+    m) MTU="$OPTARG" ;;
+    p) DNSTT_PORT="$OPTARG" ;;
+    h)
+      echo "Usage: $0 -d <domain> [-m <mtu>] [-p <internal_port>]"
+      echo "  -d  DNS tunnel domain (e.g., ns.example.com)"
+      echo "  -m  MTU size (default: 1800)"
+      echo "  -p  Internal DNSTT port (default: 5300)"
+      exit 0
+      ;;
+    *)
+      echo "Invalid option. Use -h for help."
+      exit 1
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+# Grab IP early for DNS creation or instructions
+IPV4=$(curl -s4 icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+
+# If domain wasn't provided via flag, prompt
+if [ -z "$TDOMAIN" ]; then
+  echo ""
+  echo "==============================================="
+  echo "       DNS Tunnel Domain Configuration         "
+  echo "==============================================="
+  echo "To use DNSTT, you need to configure DNS records."
+  echo "1. Automatic Setup (Cloudflare API Integration)"
+  echo "2. Manual Setup (I will create records in my registrar)"
+  echo "==============================================="
+  read -rp "Select option [1-2]: " dns_choice
+  
+  if [ "$dns_choice" == "1" ]; then
+      read -rp "Enter Cloudflare API Token (Requires Edit Zone DNS permission): " CF_TOKEN
+      read -rp "Enter your Base Domain (e.g. yours.com): " BASE_DOMAIN
+      
+      # Disable pipefail temporarily because `head -c 4` and `grep | head` can trigger SIGPIPE and kill the script under `set -e`
+      set +euo pipefail
+      
+      NS_PREFIX=$(tr -dc a-m </dev/urandom | head -c 1 2>/dev/null || echo "n")
+      TUN_PREFIX=$(tr -dc n-z </dev/urandom | head -c 1 2>/dev/null || echo "t")
+      
+      echo "[*] Automatically generated Name Server prefix: ${NS_PREFIX}"
+      echo "[*] Automatically generated Tunnel prefix: ${TUN_PREFIX}"
+      
+      NS_DOMAIN="${NS_PREFIX}.${BASE_DOMAIN}"
+      TDOMAIN="${TUN_PREFIX}.${BASE_DOMAIN}"
+      
+      echo "[*] Fetching Zone ID for ${BASE_DOMAIN}..."
+      ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${BASE_DOMAIN}" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json" | grep -o '"id":"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        
+      set -euo pipefail
+        
+      if [ -z "$ZONE_ID" ]; then
+          echo "[-] Failed to get Zone ID. Please check your API Token and Domain."
+          exit 1
+      fi
+      
+      echo "[*] Creating A record for ${NS_DOMAIN} -> ${IPV4}..."
+      curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data '{"type":"A","name":"'"${NS_DOMAIN}"'","content":"'"${IPV4}"'","ttl":120,"proxied":false}' >/dev/null
+        
+      echo "[*] Creating NS record for ${TDOMAIN} -> ${NS_DOMAIN}..."
+      curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data '{"type":"NS","name":"'"${TDOMAIN}"'","content":"'"${NS_DOMAIN}"'","ttl":120}' >/dev/null
+        
+      echo "[+] Cloudflare records created successfully!"
+  else
+      echo ""
+      echo "=== MANUAL DNS CONFIGURATION INSTRUCTIONS ==="
+      echo "Please go to your domain registrar (e.g., Cloudflare, Namecheap) and create these two records:"
+      echo "1. Create an 'A' record:"
+      echo "   Name: ns-unida (or any name you want)"
+      echo "   Content/IP: ${IPV4:-YOUR_VPS_IP}"
+      echo "   Proxy status: DNS only (Off)"
+      echo ""
+      echo "2. Create an 'NS' record:"
+      echo "   Name: tunnel (or any name you want to use for the tunnel)"
+      echo "   Target: ns-unida.yourdomain.com (the A record you just created)"
+      echo "   Proxy status: DNS only (Off)"
+      echo "============================================="
+      echo ""
+      read -rp "Enter the DNS tunnel domain (the NS record target, e.g., tunnel.yourdomain.com): " TDOMAIN
+  fi
+fi
+
+if [ -z "$TDOMAIN" ]; then
+  echo "[-] Domain cannot be empty."
+  exit 1
+fi
+
+echo "==> Domain: ${TDOMAIN}"
+echo "==> MTU   : ${MTU}"
+sleep 1
+
+echo "==> Kuzima old dnstt/slowdns services kama zipo..."
+for svc in dnstt-smart dnstt dnstt-server dnstt-b dnstt-proxy dnsttloc slowdns dnstt-unida dnstt-unida-proxy dnstt-unida-router hev-socks5 badvpn-udpgw danted bind9 dnsmasq; do
+  systemctl disable --now "${svc}.service" >/dev/null 2>&1 || true
+done
+
+echo "==> Clearing required ports (Killing any blocking processes)..."
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 53/udp >/dev/null 2>&1 || true
+  fuser -k 53/tcp >/dev/null 2>&1 || true
+  fuser -k 5300/udp >/dev/null 2>&1 || true
+  fuser -k 1080/tcp >/dev/null 2>&1 || true
+  fuser -k 1080/udp >/dev/null 2>&1 || true
+  fuser -k 2222/tcp >/dev/null 2>&1 || true
+  fuser -k 7300/tcp >/dev/null 2>&1 || true
+  fuser -k 7300/udp >/dev/null 2>&1 || true
+fi
+if command -v lsof >/dev/null 2>&1; then
+  kill -9 $(lsof -t -i udp:53) 2>/dev/null || true
+  kill -9 $(lsof -t -i tcp:53) 2>/dev/null || true
+  kill -9 $(lsof -t -i udp:5300) 2>/dev/null || true
+  kill -9 $(lsof -t -i tcp:1080) 2>/dev/null || true
+  kill -9 $(lsof -t -i udp:1080) 2>/dev/null || true
+  kill -9 $(lsof -t -i tcp:2222) 2>/dev/null || true
+  kill -9 $(lsof -t -i tcp:7300) 2>/dev/null || true
+  kill -9 $(lsof -t -i udp:7300) 2>/dev/null || true
+fi
+
+# Free port 53 from systemd-resolved
+if [ -f /etc/systemd/resolved.conf ]; then
+  echo "==> Kusetup systemd-resolved (DNSStubListener=no)..."
+  sed -i 's/^#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+  sed -i 's/^DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf
+
+  if grep -q '^#DNS=' /etc/systemd/resolved.conf || grep -q '^DNS=' /etc/systemd/resolved.conf; then
+    sed -i 's/^#DNS=.*/DNS=9.9.9.9 1.1.1.1/' /etc/systemd/resolved.conf
+    sed -i 's/^DNS=.*/DNS=9.9.9.9 1.1.1.1/' /etc/systemd/resolved.conf
+  else
+    echo "DNS=9.9.9.9 1.1.1.1" >> /etc/systemd/resolved.conf
+  fi
+
+  systemctl restart systemd-resolved >/dev/null 2>&1 || true
+  chattr -i /etc/resolv.conf 2>/dev/null || true
+  rm -f /etc/resolv.conf
+  ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || {
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    echo "nameserver 9.9.9.9" > /etc/resolv.conf
+    echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+  }
+fi
+
+echo "==> Installing packages..."
+apt-get update -y >/dev/null 2>&1
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl python3 wget git openssh-server iptables net-tools lsof cron cmake make gcc dante-server >/dev/null 2>&1 || true
+
+echo "==> Kupakua and Setting up HEV SOCKS5 Server (Ultra-low latency, TCP+UDP)..."
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64|amd64) HEV_ARCH="x86_64" ;;
+  aarch64|arm64) HEV_ARCH="arm64" ;;
+  armv7l|armhf) HEV_ARCH="arm32v7" ;;
+  i386|i686) HEV_ARCH="i686" ;;
+  *) HEV_ARCH="x86_64" ;;
+esac
+
+mkdir -p /usr/local/bin /etc/hev
+rm -f /tmp/hev-socks5-server
+if curl -fsSL "https://github.com/heiher/hev-socks5-server/releases/download/2.13.1/hev-socks5-server-linux-${HEV_ARCH}" -o /tmp/hev-socks5-server; then
+  mv /tmp/hev-socks5-server /usr/local/bin/hev-socks5-server
+  chmod +x /usr/local/bin/hev-socks5-server
+else
+  echo "[-] Failed to download HEV SOCKS5 binary directly."
+fi
+
+echo "==> Setting up BadVPN UDP Gateway (Port 7300 for HTTP Custom & SSH UDP Forwarding)..."
+if [ ! -f /usr/local/bin/badvpn-udpgw ]; then
+  BADVPN_READY=false
+  if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+    if curl -fsSL "https://raw.githubusercontent.com/daybreakersx/premscript/master/badvpn-udpgw64" -o /usr/local/bin/badvpn-udpgw 2>/dev/null; then
+      chmod +x /usr/local/bin/badvpn-udpgw
+      if /usr/local/bin/badvpn-udpgw --help >/dev/null 2>&1 || /usr/local/bin/badvpn-udpgw --version >/dev/null 2>&1; then
+        BADVPN_READY=true
+      fi
+    fi
+  fi
+  if [ "$BADVPN_READY" = false ]; then
+    echo "==> Compiling badvpn-udpgw from source..."
+    rm -rf /tmp/badvpn
+    if git clone --depth 1 https://github.com/ambrop72/badvpn.git /tmp/badvpn >/dev/null 2>&1; then
+      mkdir -p /tmp/badvpn/build
+      cd /tmp/badvpn/build
+      cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 >/dev/null 2>&1
+      make -j$(nproc 2>/dev/null || echo 1) >/dev/null 2>&1
+      if [ -f udpgw/badvpn-udpgw ]; then
+        cp udpgw/badvpn-udpgw /usr/local/bin/badvpn-udpgw
+        chmod +x /usr/local/bin/badvpn-udpgw
+      fi
+      cd - >/dev/null 2>&1
+      rm -rf /tmp/badvpn
+    fi
+  fi
+fi
+
+if [ -f /usr/local/bin/badvpn-udpgw ]; then
+  echo "==> Creating BadVPN UDPGW service (127.0.0.1:7300)..."
+  cat >/etc/systemd/system/badvpn-udpgw.service <<EOF
+[Unit]
+Description=BadVPN UDP Gateway (Port 7300 for HTTP Custom UDP)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:7300 --max-clients 1000 --max-connections-for-client 500
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+
+echo "==> Configuring Dante SOCKS5 Server (Port 1080 - No Auth for SlipNet Direct SOCKS5)..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y dante-server >/dev/null 2>&1 || true
+
+ETH=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5}' || ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+[ -z "$ETH" ] && ETH="eth0"
+
+cat >/etc/danted.conf <<EOF
+logoutput: /var/log/danted.log
+
+internal: 127.0.0.1 port = 1080
+external: ${ETH}
+
+socksmethod: none
+clientmethod: none
+
+user.privileged: root
+user.unprivileged: nobody
+
+client pass {
+    from: 127.0.0.0/8 to: 0.0.0.0/0
+}
+
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: bind connect udpassociate
+    socksmethod: none
+}
+EOF
+
+systemctl enable danted.service >/dev/null 2>&1 || true
+systemctl restart danted.service >/dev/null 2>&1 || true
+
+echo "==> Configuring Stunnel4 for SSL/TLS on Port 443..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y stunnel4 >/dev/null 2>&1 || true
+cat >/etc/stunnel/stunnel.conf <<EOF
+pid = /var/run/stunnel4/stunnel.pid
+output = /var/log/stunnel4/stunnel.log
+foreground = no
+[unida-ssl]
+accept = 443
+connect = 127.0.0.1:2222
+cert = /etc/stunnel/stunnel.pem
+EOF
+# Generate self-signed cert if missing
+if [ ! -f /etc/stunnel/stunnel.pem ]; then
+    openssl req -new -x509 -days 365 -nodes -out /etc/stunnel/stunnel.pem -keyout /etc/stunnel/stunnel.pem -subj "/CN=unida-ssl" >/dev/null 2>&1
+    chmod 600 /etc/stunnel/stunnel.pem
+fi
+systemctl enable stunnel4.service >/dev/null 2>&1 || true
+systemctl restart stunnel4.service >/dev/null 2>&1 || true
+
+echo "==> Configuring DNSTT Smart Protocol Multiplexer (Port 2222: Auto Route SSH & SOCKS5)..."
+cat >/usr/local/bin/dnstt-multiplexer.py <<'EOF_MUX'
+#!/usr/bin/env python3
+"""
+Unida Smart Protocol Multiplexer
+Routes incoming DNSTT tunnel connections:
+- 0x05 (SOCKS5, e.g., SlipNet) -> Dante SOCKS5 (127.0.0.1:1080)
+- Non-SOCKS5 (SSH, e.g., HTTP Custom) -> OpenSSH (127.0.0.1:22)
+"""
+import socket, threading
+
+LISTEN_ADDR = ("127.0.0.1", 2222)
+SSH_TARGET = ("127.0.0.1", 22)
+SOCKS_TARGET = ("127.0.0.1", 1080)
+
+def forward_stream(src, dst):
+    try:
+        while True:
+            buf = src.recv(8192)
+            if not buf:
+                break
+            dst.sendall(buf)
+    except Exception:
+        pass
+    finally:
+        try: src.shutdown(socket.SHUT_RDWR); src.close()
+        except: pass
+        try: dst.shutdown(socket.SHUT_RDWR); dst.close()
+        except: pass
+
+def handle_client(client_sock):
+    client_sock.settimeout(0.2)
+    first_bytes = b""
+    try:
+        first_bytes = client_sock.recv(1024)
+    except Exception:
+        pass
+
+    client_sock.settimeout(None)
+
+    target = SOCKS_TARGET if (first_bytes and first_bytes[0] == 5) else SSH_TARGET
+
+    try:
+        backend_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        backend_sock.connect(target)
+        if first_bytes:
+            backend_sock.sendall(first_bytes)
+        t1 = threading.Thread(target=forward_stream, args=(client_sock, backend_sock), daemon=True)
+        t2 = threading.Thread(target=forward_stream, args=(backend_sock, client_sock), daemon=True)
+        t1.start()
+        t2.start()
+    except Exception:
+        try: client_sock.close()
+        except: pass
+
+def main():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(LISTEN_ADDR)
+    server.listen(1024)
+    while True:
+        try:
+            client, _ = server.accept()
+            threading.Thread(target=handle_client, args=(client,), daemon=True).start()
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    main()
+EOF_MUX
+chmod +x /usr/local/bin/dnstt-multiplexer.py
+
+cat >/etc/systemd/system/dnstt-unida-router.service <<EOF
+[Unit]
+Description=Unida Protocol Multiplexer (Auto Route SSH & SOCKS5)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/dnstt-multiplexer.py
+Restart=always
+RestartSec=1
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "==> Kupakua dnstt-server binary (Linux x64)..."
+mkdir -p /usr/local/bin
+rm -f /tmp/dnstt-server
+if curl -fsSL "https://dnstt.network/dnstt-server-linux-amd64" -o /tmp/dnstt-server; then
+  rm -f /usr/local/bin/dnstt-server
+  mv /tmp/dnstt-server /usr/local/bin/dnstt-server
+  chmod +x /usr/local/bin/dnstt-server
+else
+  echo "[-] Failed to download dnstt-server binary."
+  exit 1
+fi
+
+echo "==> Ku-generate server keys (ikiwa bado hazipo)..."
+mkdir -p /etc/dnstt
+if [ ! -f /etc/dnstt/server.key ] || [ ! -f /etc/dnstt/server.pub ]; then
+  /usr/local/bin/dnstt-server -gen-key \
+    -privkey-file /etc/dnstt/server.key \
+    -pubkey-file  /etc/dnstt/server.pub
+fi
+chmod 600 /etc/dnstt/server.key
+chmod 644 /etc/dnstt/server.pub
+
+echo "==> Kuunda service /etc/systemd/system/dnstt-unida.service..."
+cat >/etc/systemd/system/dnstt-unida.service <<EOF
+[Unit]
+Description=Unida DNSTT DNS Tunnel (stable)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dnstt-server -udp 127.0.0.1:${DNSTT_PORT} -mtu ${MTU} -privkey-file /etc/dnstt/server.key ${TDOMAIN} 127.0.0.1:2222
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "==> Kuunda EDNS proxy (512 <-> 1232)..."
+cat >/usr/local/bin/dnstt-edns-proxy.py <<EOF_PY
+#!/usr/bin/env python3
+import socket, struct, concurrent.futures, sys
+
+LISTEN_HOST="0.0.0.0"
+LISTEN_PORT=${PROXY_PORT}
+UPSTREAM_HOST="127.0.0.1"
+UPSTREAM_PORT=${DNSTT_PORT}
+EXTERNAL_EDNS_SIZE=1232
+INTERNAL_EDNS_SIZE=${MTU}
+
+def extract_and_patch_edns(data: bytes, new_size: int):
+    """Returns (patched_data, original_edns_size_from_client)."""
+    if len(data) < 12: return data, None
+    try:
+        qdcount, ancount, nscount, arcount = struct.unpack("!HHHH", data[4:12])
+    except struct.error:
+        return data, None
+
+    offset = 12
+
+    def skip_name(buf, off):
+        while True:
+            if off >= len(buf): return len(buf)
+            l = buf[off]; off += 1
+            if l == 0: break
+            if l & 0xC0 == 0xC0:
+                if off >= len(buf): return len(buf)
+                off += 1
+                break
+            off += l
+        return off
+
+    for _ in range(qdcount):
+        offset = skip_name(data, offset)
+        if offset + 4 > len(data): return data, None
+        offset += 4
+
+    def skip_rrs(count, buf, off):
+        for _ in range(count):
+            off = skip_name(buf, off)
+            if off + 10 > len(buf): return len(buf)
+            rtype, rclass, ttl, rdlen = struct.unpack("!HHIH", buf[off:off+10])
+            off += 10
+            if off + rdlen > len(buf): return len(buf)
+            off += rdlen
+        return off
+
+    offset = skip_rrs(ancount, data, offset)
+    offset = skip_rrs(nscount, data, offset)
+
+    new_data = bytearray(data)
+    for _ in range(arcount):
+        offset = skip_name(data, offset)
+        if offset + 10 > len(data): return data, None
+        rtype = struct.unpack("!H", data[offset:offset+2])[0]
+        if rtype == 41:
+            orig_size = struct.unpack("!H", data[offset+2:offset+4])[0]
+            new_data[offset+2:offset+4] = struct.pack("!H", new_size)
+            return bytes(new_data), orig_size
+        rdlen = struct.unpack("!H", data[offset+8:offset+10])[0]
+        offset += 10 + rdlen
+    return data, None
+
+def handle_request(server_sock, data, client_addr):
+    upstream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    upstream_sock.settimeout(10.0)
+    try:
+        upstream_data, orig_size = extract_and_patch_edns(data, INTERNAL_EDNS_SIZE)
+        upstream_sock.sendto(upstream_data, (UPSTREAM_HOST, UPSTREAM_PORT))
+        resp, _ = upstream_sock.recvfrom(4096)
+        
+        # Optimize by providing the maximum supported EDNS size (at least 1800).
+        final_size = max(orig_size if orig_size else 0, EXTERNAL_EDNS_SIZE)
+        
+        resp_patched, _ = extract_and_patch_edns(resp, final_size)
+        server_sock.sendto(resp_patched, client_addr)
+    except Exception as e:
+        sys.stderr.write(f"Proxy handler error: {e}\\n")
+        sys.stderr.flush()
+    finally:
+        upstream_sock.close()
+
+def main():
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except: pass
+    try:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except: pass
+    try:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8388608)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8388608)
+    except: pass
+    
+    try:
+        server_sock.bind((LISTEN_HOST, LISTEN_PORT))
+    except Exception as e:
+        sys.stderr.write(f"[-] Error binding to {LISTEN_HOST}:{LISTEN_PORT}: {e}\\n")
+        sys.stderr.write(f"[-] Ensure port {LISTEN_PORT} is not already in use by systemd-resolved, dnsmasq, or bind9.\\n")
+        sys.stderr.flush()
+        sys.exit(1)
+    print(f"[Unida EDNS proxy] Listening on {LISTEN_HOST}:{LISTEN_PORT}, upstream {UPSTREAM_HOST}:{UPSTREAM_PORT}")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2048) as executor:
+        while True:
+            try:
+                data, client_addr = server_sock.recvfrom(4096)
+                executor.submit(handle_request, server_sock, data, client_addr)
+            except Exception as e:
+                sys.stderr.write(f"Proxy receive error: {e}\\n")
+                sys.stderr.flush()
+
+if __name__ == "__main__":
+    main()
+EOF_PY
+chmod +x /usr/local/bin/dnstt-edns-proxy.py
+
+cat >/etc/systemd/system/dnstt-unida-proxy.service <<EOF
+[Unit]
+Description=Unida DNSTT EDNS Proxy (512<->1232)
+After=network-online.target dnstt-unida.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/dnstt-edns-proxy.py
+Restart=always
+RestartSec=1
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "==> Configuring Management CLI (unida)..."
+cat >/usr/local/bin/unida <<'EOF_MANAGER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+clear_screen() {
+    clear
+}
+
+header() {
+    clear_screen
+    echo "==============================================="
+    echo "       Unida DNSTT Manager CLI"
+    echo "==============================================="
+}
+
+pause() {
+    echo ""
+    read -rp "Press [Enter] to return to menu..."
+}
+
+create_user() {
+    header
+    echo "--- Create SSH Tunnel User ---"
+    read -rp "Enter username: " USER
+    if [ -z "$USER" ]; then
+        echo "[-] Username cannot be empty."
+        pause; return
+    fi
+    if id "$USER" &>/dev/null; then
+        echo "[-] User $USER already exists!"
+        pause; return
+    fi
+    useradd -m -s /bin/false "$USER"
+    read -rp "Enter password (or leave empty to set later): " PASS
+    if [ -n "$PASS" ]; then
+        echo "$USER:$PASS" | chpasswd
+        echo "[+] Created user: $USER with provided password."
+    else
+        echo "[+] Created user: $USER. Setting password manually:"
+        passwd "$USER"
+    fi
+    pause
+}
+
+delete_user() {
+    header
+    echo "--- Delete SSH Tunnel User ---"
+    read -rp "Enter username to delete: " USER
+    if [ -z "$USER" ]; then return; fi
+    if ! id "$USER" &>/dev/null; then
+        echo "[-] User $USER doesn't exist!"
+        pause; return
+    fi
+    userdel -r "$USER"
+    echo "[+] Deleted user: $USER"
+    pause
+}
+
+list_users() {
+    header
+    echo "--- List of SSH Tunnel Users ---"
+    awk -F':' '/\/bin\/false/{print "- " $1}' /etc/passwd
+    pause
+}
+
+show_status() {
+    header
+    echo "--- DNSTT Tunnel Status ---"
+    systemctl status dnstt-unida.service --no-pager || true
+    echo ""
+    echo "--- EDNS Proxy Status ---"
+    systemctl status dnstt-unida-proxy.service --no-pager || true
+    echo ""
+    echo "--- Smart Protocol Multiplexer (Port 2222: Auto Route) ---"
+    systemctl status dnstt-unida-router.service --no-pager 2>/dev/null || true
+    echo ""
+    echo "--- Dante SOCKS5 Status (Port 1080 - No Auth for SlipNet) ---"
+    systemctl status danted.service --no-pager 2>/dev/null || true
+    echo ""
+    echo "--- BadVPN UDPGW Status (Port 7300 for HTTP Custom UDP) ---"
+    systemctl status badvpn-udpgw.service --no-pager 2>/dev/null || true
+    echo ""
+    echo "--- Stunnel4 Status (SSL/TLS on Port 443) ---"
+    systemctl status stunnel4.service --no-pager 2>/dev/null || true
+    pause
+}
+
+view_logs() {
+    header
+    echo "--- View Live Logs ---"
+    echo "1) Main Tunnel Logs"
+    echo "2) EDNS Proxy Logs"
+    echo "3) Smart Protocol Multiplexer Logs"
+    echo "4) Dante SOCKS5 Server Logs (SlipNet)"
+    echo "5) BadVPN UDPGW Logs (HTTP Custom UDP)"
+    echo "0) Back"
+    read -rp "Select option: " log_choice
+    case $log_choice in
+        1) journalctl -u dnstt-unida.service -f ;;
+        2) journalctl -u dnstt-unida-proxy.service -f ;;
+        3) journalctl -u dnstt-unida-router.service -f ;;
+        4) journalctl -u danted.service -f ;;
+        5) journalctl -u badvpn-udpgw.service -f ;;
+        0) return ;;
+        *) echo "Invalid option." ;;
+    esac
+}
+
+restart_services() {
+    header
+    echo "[+] Restarting all services..."
+    systemctl restart dnstt-unida.service dnstt-unida-proxy.service dnstt-unida-router.service danted.service badvpn-udpgw.service 2>/dev/null || true
+    echo "[+] All services restarted successfully."
+    pause
+}
+
+show_key() {
+    header
+    echo "--- Server Public Key ---"
+    cat /etc/dnstt/server.pub 2>/dev/null || echo "Key not found!"
+    pause
+}
+
+change_mtu() {
+    header
+    echo "--- Change MTU Size ---"
+    current_mtu=$(grep -o '\-mtu [0-9]*' /etc/systemd/system/dnstt-unida.service | awk '{print $2}')
+    echo "Current MTU: ${current_mtu:-Unknown}"
+    read -rp "Enter new MTU size (e.g., 1800, 1200): " NEW_MTU
+    if [ -z "$NEW_MTU" ] || ! [[ "$NEW_MTU" =~ ^[0-9]+$ ]]; then
+        echo "[-] Invalid MTU size."
+        pause; return
+    fi
+    echo "[+] Updating MTU in dnstt-unida.service..."
+    sed -i "s/-mtu [0-9]\+/-mtu $NEW_MTU/g" /etc/systemd/system/dnstt-unida.service
+    if [ -f /usr/local/bin/dnstt-edns-proxy.py ]; then
+        echo "[+] Updating internal EDNS size in proxy..."
+        sed -i "s/INTERNAL_EDNS_SIZE=[0-9]\+/INTERNAL_EDNS_SIZE=$NEW_MTU/g" /usr/local/bin/dnstt-edns-proxy.py
+    fi
+    systemctl daemon-reload
+    systemctl restart dnstt-unida.service dnstt-unida-proxy.service 2>/dev/null || true
+    echo "[+] MTU changed to $NEW_MTU and services restarted."
+    pause
+}
+
+update_script() {
+    header
+    echo "--- Update Unida Script & Services ---"
+    echo "Downloading latest version..."
+    wget -qO /tmp/unida-installer.sh "https://raw.githubusercontent.com/Seven7388/Unida/main/public/unida-installer.sh?t=$(date +%s)"
+    if [ -s /tmp/unida-installer.sh ]; then
+        sed -n '/^cat >\/usr\/local\/bin\/unida <<'"'EOF_MANAGER'"'/,/^EOF_MANAGER/p' /tmp/unida-installer.sh | sed '1d;$d' > /tmp/unida_new
+        chmod +x /tmp/unida_new
+        mv /tmp/unida_new /usr/local/bin/unida
+        echo "[+] Unida manager CLI updated successfully!"
+        echo ""
+        read -rp "Do you also want to reinstall and start all backend services (BadVPN, Dante, Router)? (y/n): " re_srv
+        if [[ "$re_srv" == "y" || "$re_srv" == "Y" ]]; then
+            bash /tmp/unida-installer.sh
+            exit 0
+        fi
+
+        echo ""
+        echo "=== CHANGELOG ==="
+        echo "Fetching latest changes..."
+        curl -s "https://api.github.com/repos/Seven7388/Unida/commits?per_page=3" | grep '"message":' | cut -d '"' -f 4 | sed 's/\\n.*//' | sed 's/^/- /'
+        echo "================="
+        echo ""
+        echo "[!] Restarting CLI to apply updates..."
+        sleep 2
+        exec unida
+    else
+        echo "[-] Failed to download update."
+        pause
+    fi
+}
+
+switch_tunnel_mode() {
+    header
+    echo "--- Switch Tunnel Backend Mode ---"
+    echo "Currently, your DNSTT tunnel connects clients to:"
+    if grep -q "127.0.0.1:2222" /etc/systemd/system/dnstt-unida.service 2>/dev/null; then
+        echo "  --> Auto-Detect Mode (Port 2222) [BOTH HTTP Custom & SlipNet supported!]"
+    elif grep -q "127.0.0.1:22" /etc/systemd/system/dnstt-unida.service 2>/dev/null; then
+        echo "  --> Dedicated SSH Mode (Port 22) [HTTP Custom & SSH accounts]"
+    elif grep -q "127.0.0.1:1080" /etc/systemd/system/dnstt-unida.service 2>/dev/null; then
+        echo "  --> Dedicated Dante SOCKS5 Mode (Port 1080) [SlipNet SOCKS5 Direct - No Auth]"
+    else
+        echo "  --> Custom Port"
+    fi
+    echo ""
+    echo "Options:"
+    echo "  1) Auto-Detect Mode (Port 2222) - Recommended: Both SSH & SOCKS5 work together!"
+    echo "  2) Dedicated SSH Mode (Port 22) - HTTP Custom, HTTP Injector, SSH apps"
+    echo "  3) Dedicated Dante SOCKS5 Mode (Port 1080) - Direct SOCKS5 (No Auth)"
+    echo "  0) Cancel"
+    read -rp "Select mode: " mode_choice
+
+    case $mode_choice in
+        1)
+            systemctl restart dnstt-unida-router.service danted.service badvpn-udpgw.service 2>/dev/null || true
+            systemctl enable dnstt-unida-router.service danted.service badvpn-udpgw.service 2>/dev/null || true
+            sed -i 's/ 127\.0\.0\.1:[0-9]* *$/ 127.0.0.1:2222/' /etc/systemd/system/dnstt-unida.service
+            systemctl daemon-reload
+            systemctl restart dnstt-unida.service 2>/dev/null || true
+            echo "[+] Switched to Auto-Detect Mode (Port 2222)."
+            pause
+            ;;
+        2)
+            sed -i 's/ 127\.0\.0\.1:[0-9]* *$/ 127.0.0.1:22/' /etc/systemd/system/dnstt-unida.service
+            systemctl daemon-reload
+            systemctl restart dnstt-unida.service 2>/dev/null || true
+            echo "[+] Switched to Dedicated SSH Mode (Port 22)."
+            pause
+            ;;
+        3)
+            systemctl restart danted.service 2>/dev/null || true
+            systemctl enable danted.service 2>/dev/null || true
+            sed -i 's/ 127\.0\.0\.1:[0-9]* *$/ 127.0.0.1:1080/' /etc/systemd/system/dnstt-unida.service
+            systemctl daemon-reload
+            systemctl restart dnstt-unida.service 2>/dev/null || true
+            echo "[+] Switched to Dedicated Dante SOCKS5 Mode (Port 1080)."
+            pause
+            ;;
+        0) return ;;
+        *) echo "[-] Invalid option."; pause ;;
+    esac
+}
+
+uninstall_unida() {
+    header
+    echo "--- Uninstall Unida Server ---"
+    echo "WARNING: This will completely remove Unida DNSTT, proxy, HEV SOCKS5, and all configurations."
+    read -rp "Are you sure? (y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        echo "[+] Stopping services..."
+        systemctl disable --now dnstt-unida.service dnstt-unida-proxy.service dnstt-unida-router.service danted.service hev-socks5.service badvpn-udpgw.service 2>/dev/null || true
+        echo "[+] Removing files..."
+        rm -f /usr/local/bin/dnstt-server
+        rm -f /usr/local/bin/dnstt-edns-proxy.py
+        rm -f /usr/local/bin/dnstt-multiplexer.py
+        rm -f /usr/local/bin/hev-socks5-server
+        rm -f /usr/local/bin/badvpn-udpgw
+        rm -rf /etc/hev
+        rm -f /usr/local/bin/unida
+        rm -rf /etc/dnstt
+        rm -f /etc/systemd/system/dnstt-unida.service
+        rm -f /etc/systemd/system/dnstt-unida-proxy.service
+        rm -f /etc/systemd/system/dnstt-unida-router.service
+        rm -f /etc/systemd/system/hev-socks5.service
+        rm -f /etc/systemd/system/badvpn-udpgw.service
+        systemctl daemon-reload
+        echo "[+] Removing users..."
+        for user in $(awk -F':' '/\/bin\/false/{print $1}' /etc/passwd); do
+            userdel -r "$user" 2>/dev/null || true
+        done
+        echo "[+] Uninstallation complete."
+        exit 0
+    else
+        echo "Uninstallation cancelled."
+        pause
+    fi
+}
+
+main_menu() {
+    while true; do
+        header
+        echo "  1) Create new SSH User"
+        echo "  2) Delete SSH User"
+        echo "  3) List all SSH Users"
+        echo "  4) Show DNSTT Tunnel Status"
+        echo "  5) View Live Logs"
+        echo "  6) Restart DNSTT Services"
+        echo "  7) Show Server Public Key"
+        echo "  8) Change MTU Size"
+        echo "  9) Switch Tunnel Mode (SSH/SOCKS5)"
+        echo "  10) Update Unida Script"
+        echo "  11) Uninstall Unida Server"
+        echo "  0) Exit"
+        echo "==============================================="
+        read -rp "Select an option [0-11]: " choice
+        case $choice in
+            1) create_user ;;
+            2) delete_user ;;
+            3) list_users ;;
+            4) show_status ;;
+            5) view_logs ;;
+            6) restart_services ;;
+            7) show_key ;;
+            8) change_mtu ;;
+            9) switch_tunnel_mode ;;
+            10) update_script ;;
+            11) uninstall_unida ;;
+            0) exit 0 ;;
+            *) echo "Invalid option"; sleep 1 ;;
+        esac
+    done
+}
+
+if [ "$#" -gt 0 ]; then
+    # Keep old command-line behavior just in case
+    case "$1" in
+        useradd) shift; [ -n "${1:-}" ] && { useradd -m -s /bin/false "$1"; [ -n "${2:-}" ] && echo "$1:$2" | chpasswd || passwd "$1"; } ;;
+        *) main_menu ;;
+    esac
+else
+    main_menu
+fi
+EOF_MANAGER
+chmod +x /usr/local/bin/unida
+
+echo "==> Configuring Network Forwarding and IPTables for Internet Access..."
+# Enable IPv4 forwarding
+sed -i '/net.ipv4.ip_forward/s/^#//g' /etc/sysctl.conf
+if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+  echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+fi
+sysctl -p >/dev/null 2>&1
+
+# Setup IPTables Masquerade for internet access through the VPN/SSH Tunnel
+ETH=$(ip route get 8.8.8.8 | awk -- '{printf $5}')
+if [ -z "$ETH" ]; then
+    ETH=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+fi
+
+if [ -n "$ETH" ]; then
+  iptables -t nat -A POSTROUTING -o "$ETH" -j MASQUERADE
+  if [ "${PROXY_PORT}" != "53" ]; then
+    iptables -t nat -A PREROUTING -i "$ETH" -p udp --dport 53 -j REDIRECT --to-ports "${PROXY_PORT}"
+  fi
+else
+  iptables -t nat -A POSTROUTING -j MASQUERADE
+  if [ "${PROXY_PORT}" != "53" ]; then
+    iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports "${PROXY_PORT}"
+  fi
+fi
+
+  # Block outgoing QUIC (UDP 443) to force Instagram/YouTube to use TCP
+  # This makes DNSTT much faster by avoiding UDP fragmentation.
+  iptables -A OUTPUT -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+  iptables -I FORWARD -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+
+iptables -I FORWARD -j ACCEPT 2>/dev/null || true
+  iptables -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+  iptables-save > /etc/iptables.up.rules
+
+  # Ensure it restores on boot
+  mkdir -p /etc/network/if-pre-up.d
+  cat >/etc/network/if-pre-up.d/iptables <<EOF
+#!/bin/sh
+iptables-restore < /etc/iptables.up.rules
+EOF
+  chmod +x /etc/network/if-pre-up.d/iptables
+
+# Enable required SSH forwarding features
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
+
+# 1. Clean up lingering dnsgb and sshtun-user blocks from sshd_config that cause lockouts and connection drops
+sed -i '/### SSHTUN-USER START ###/,/### SSHTUN-USER END ###/d' /etc/ssh/sshd_config
+sed -i '/### SSHTUN-USER/d' /etc/ssh/sshd_config
+sed -i '/sshtun/d' /etc/ssh/sshd_config
+sed -i '/dnsgb/d' /etc/ssh/sshd_config
+
+# 2. Register /bin/false and /usr/sbin/nologin as valid shells to prevent pam_shells.so rejections
+if [ -f /etc/shells ]; then
+  for sh in /bin/false /usr/sbin/nologin /sbin/nologin; do
+    if ! grep -q "^$sh" /etc/shells; then
+      echo "$sh" >> /etc/shells
+    fi
+  done
+fi
+
+# 3. Apply standard robust SSH configurations
+sed -i 's/^#ListenAddress.*/ListenAddress 0.0.0.0/g' /etc/ssh/sshd_config
+if ! grep -q "^ListenAddress" /etc/ssh/sshd_config; then echo "ListenAddress 0.0.0.0" >> /etc/ssh/sshd_config; fi
+
+sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+if ! grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config; then echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config; fi
+
+sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+sed -i 's/^#AllowTcpForwarding.*/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
+sed -i 's/^#GatewayPorts.*/GatewayPorts yes/g' /etc/ssh/sshd_config
+if ! grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config; then echo "PermitRootLogin yes" >> /etc/ssh/sshd_config; fi
+if ! grep -q "^AllowTcpForwarding yes" /etc/ssh/sshd_config; then echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config; fi
+if ! grep -q "^GatewayPorts yes" /etc/ssh/sshd_config; then echo "GatewayPorts yes" >> /etc/ssh/sshd_config; fi
+if ! grep -q "^TCPKeepAlive yes" /etc/ssh/sshd_config; then echo "TCPKeepAlive yes" >> /etc/ssh/sshd_config; fi
+
+# 4. Enforce overrides in sshd_config.d drop-ins to prevent Cloud-Init/OS locking out passwords and forwarding
+if [ -d /etc/ssh/sshd_config.d ]; then
+  find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/g' {} + 2>/dev/null || true
+  find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/g' {} + 2>/dev/null || true
+  cat > /etc/ssh/sshd_config.d/99-unida.conf << 'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+AllowTcpForwarding yes
+GatewayPorts yes
+TCPKeepAlive yes
+ClientAliveInterval 300
+ClientAliveCountMax 5
+UseDNS no
+MaxSessions 10000
+MaxStartups 1000:30:10000
+KexAlgorithms +diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group-exchange-sha256
+Ciphers +aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc
+HostKeyAlgorithms +ssh-rsa,ssh-dss
+PubkeyAcceptedKeyTypes +ssh-rsa,ssh-dss
+EOF
+  chmod 644 /etc/ssh/sshd_config.d/99-unida.conf 2>/dev/null || true
+fi
+
+systemctl restart ssh.socket 2>/dev/null || true
+systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+
+echo "==> Starting services..."
+systemctl daemon-reload
+systemctl enable --now dnstt-unida.service
+systemctl enable --now dnstt-unida-proxy.service
+systemctl enable --now dnstt-unida-router.service
+systemctl enable --now danted.service
+if [ -f /etc/systemd/system/badvpn-udpgw.service ]; then
+  systemctl enable --now badvpn-udpgw.service
+fi
+
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 22/tcp >/dev/null 2>&1 || true
+  ufw allow 53/udp >/dev/null 2>&1 || true
+  ufw allow ${PROXY_PORT}/udp >/dev/null 2>&1 || true
+  ufw reload >/dev/null 2>&1 || true
+fi
+
+# General IPTables rules for Oracle Cloud / strict firewalls
+iptables -I INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p udp --dport ${PROXY_PORT} -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+iptables-save > /etc/iptables.up.rules 2>/dev/null || true
+
+# Firewalld support (CentOS/AlmaLinux/Oracle)
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --add-port=53/udp --permanent 2>/dev/null || true
+  firewall-cmd --add-port=53/tcp --permanent 2>/dev/null || true
+  firewall-cmd --add-port=${PROXY_PORT}/udp --permanent 2>/dev/null || true
+  firewall-cmd --reload 2>/dev/null || true
+fi
+
+IPV4=$(curl -s4 icanhazip.com || hostname -I | awk '{print $1}')
+
+echo ""
+echo "==============================================="
+echo "        UNIDA DNSTT SERVER READY"
+echo "==============================================="
+echo "Server IP        : ${IPV4}"
+echo "Tunnel Domain    : ${TDOMAIN}"
+echo "MTU              : ${MTU}"
+echo "dnstt-server     : 127.0.0.1:${DNSTT_PORT}"
+echo "proxy public     : UDP :${PROXY_PORT}"
+echo "Tunnel Target    : 127.0.0.1:2222 (Auto-Detect Multiplexer)"
+echo "OpenSSH          : 127.0.0.1:22 (For HTTP Custom, HTTP Injector)"
+echo "BadVPN UDPGW     : 127.0.0.1:7300 (UDP Gateway for HTTP Custom / SSH Apps)"
+echo "Dante SOCKS5     : 127.0.0.1:1080 (For SlipNet / SOCKS5 Direct - No Auth)"
+echo "Stunnel4 SSL/TLS : 0.0.0.0:443 -> 127.0.0.1:2222 (HTTPS Obfuscation)"
+echo ""
+echo "Public key:"
+cat /etc/dnstt/server.pub || true
+echo ""
+echo "🔥 NEW: Use the 'unida' command to manage your server!"
+echo "    Add SSH user    : unida useradd username password"
+echo "    Check status    : unida status"
+echo "    Switch backend  : unida (Option 9: SSH or HEV SOCKS5)"
+echo "    See all commands: unida help"
+echo "==============================================="

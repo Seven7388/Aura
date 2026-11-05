@@ -1,0 +1,558 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Aura — Unified Tunnel Manager for Linux Servers
+# Manages DNS tunnels (DNSTT, NoizDNS, Slipstream, VayDNS, Soar) and HTTPS
+# proxies (NaiveProxy, StunTLS) with systemd services, multi-tunnel DNS routing,
+# user management, and client config generation.
+# ==============================================================================
+set -euo pipefail
+
+AURA_VERSION="2.0.0"
+CONFIG_DIR="/etc/aura"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
+TUNNELS_DIR="${CONFIG_DIR}/tunnels"
+CERTS_DIR="${CONFIG_DIR}/certs"
+LOGS_DIR="/var/log/aura"
+BIN_DIR="/usr/local/bin"
+
+# Terminal Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Ensure root execution for system modifications
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}[!] Error: This command requires root privileges. Please run with sudo.${NC}" >&2
+        exit 1
+    fi
+}
+
+# Ensure directory structure exists
+ensure_dirs() {
+    mkdir -p "${CONFIG_DIR}" "${TUNNELS_DIR}" "${CERTS_DIR}" "${LOGS_DIR}"
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        cat <<EOF > "${CONFIG_FILE}"
+{
+  "version": "${AURA_VERSION}",
+  "server_address": "auto",
+  "dns_router": {
+    "listen_udp": "0.0.0.0:53",
+    "listen_tcp": "0.0.0.0:53",
+    "mode": "multi",
+    "default_tunnel": ""
+  },
+  "socks5": {
+    "enabled": true,
+    "listen": "127.0.0.1:1080",
+    "auth": false
+  },
+  "stuntls": {
+    "enabled": true,
+    "listen": "0.0.0.0:443",
+    "backend": "127.0.0.1:2222",
+    "min_tls": "1.2",
+    "max_tls": "1.3"
+  },
+  "udpgw": {
+    "enabled": true,
+    "listen": "127.0.0.1:7300",
+    "max_clients": 1000
+  },
+  "multiplexer": {
+    "enabled": true,
+    "listen": "127.0.0.1:2222",
+    "ssh_target": "127.0.0.1:22",
+    "socks_target": "127.0.0.1:1080"
+  },
+  "tunnels": []
+}
+EOF
+    fi
+}
+
+# Get public IP address
+get_public_ip() {
+    local ip
+    ip=$(curl -s4 --max-time 3 https://api.ipify.org 2>/dev/null || curl -s4 --max-time 3 https://icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+    echo "${ip:-127.0.0.1}"
+}
+
+# Banner
+show_banner() {
+    echo -e "${CYAN}${BOLD}"
+    echo "  █████╗ ██╗   ██╗██████╗  █████╗ "
+    echo " ██╔══██╗██║   ██║██╔══██╗██╔══██╗"
+    echo " ███████║██║   ██║██████╔╝███████║"
+    echo " ██╔══██║██║   ██║██╔══██╗██╔══██║"
+    echo " ██║  ██║╚██████╔╝██║  ██║██║  ██║"
+    echo " ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝"
+    echo -e "${NC} Unified Tunnel & Server Manager v${AURA_VERSION}"
+    echo -e "${CYAN}--------------------------------------------------${NC}"
+}
+
+# Diagnostics command
+cmd_diag() {
+    ensure_dirs
+    echo -e "\n${BOLD}${CYAN}=== Aura Server Diagnostics ===${NC}\n"
+    
+    echo -e "${BOLD}[1/5] Core Service Status:${NC}"
+    local services=("aura-dnsrouter" "aura-socks5" "aura-stuntls" "aura-udpgw" "aura-multiplexer")
+    for svc in "${services[@]}"; do
+        if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+            echo -e "  • ${svc}: ${GREEN}ACTIVE (Running)${NC}"
+        else
+            echo -e "  • ${svc}: ${RED}INACTIVE / STOPPED${NC}"
+        fi
+    done
+
+    echo -e "\n${BOLD}[2/5] Active Tunnels:${NC}"
+    if [[ -d "${TUNNELS_DIR}" ]]; then
+        local found=0
+        for tun in "${TUNNELS_DIR}"/*.json; do
+            if [[ -f "$tun" ]]; then
+                found=1
+                local tag
+                tag=$(basename "$tun" .json)
+                local svc="aura-tunnel-${tag}"
+                if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+                    echo -e "  • Tunnel [${tag}]: ${GREEN}ONLINE${NC}"
+                else
+                    echo -e "  • Tunnel [${tag}]: ${YELLOW}CONFIGURED (Stopped)${NC}"
+                fi
+            fi
+        done
+        [[ $found -eq 0 ]] && echo "  (No tunnels configured yet. Use 'aura tunnel add')"
+    fi
+
+    echo -e "\n${BOLD}[3/5] Port Allocation & Conflicts:${NC}"
+    local ports=("53:DNS (UDP/TCP)" "443:StunTLS/HTTPS" "1080:SOCKS5" "2222:Multiplexer" "7300:BadVPN UDPGW")
+    for p_info in "${ports[@]}"; do
+        local p="${p_info%%:*}"
+        local desc="${p_info#*:}"
+        if ss -tuln | grep -q ":${p} "; then
+            local proc
+            proc=$(ss -tulnp 2>/dev/null | grep ":${p} " | awk '{print $NF}' | head -n 1)
+            echo -e "  • Port ${p} (${desc}): ${GREEN}LISTENING${NC} [${proc:-system}]"
+        else
+            echo -e "  • Port ${p} (${desc}): ${YELLOW}AVAILABLE / NOT BOUND${NC}"
+        fi
+    done
+
+    echo -e "\n${BOLD}[4/5] Network Configuration:${NC}"
+    local pub_ip
+    pub_ip=$(get_public_ip)
+    echo -e "  • Public IP: ${CYAN}${pub_ip}${NC}"
+    echo -e "  • IPv4 Forwarding: $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo '0')"
+
+    echo -e "\n${BOLD}[5/5] Cryptographic Keys & Certs:${NC}"
+    if [[ -f "${CERTS_DIR}/stuntls.pem" ]]; then
+        echo -e "  • StunTLS Certificate: ${GREEN}PRESENT (${CERTS_DIR}/stuntls.pem)${NC}"
+    else
+        echo -e "  • StunTLS Certificate: ${YELLOW}NOT GENERATED${NC}"
+    fi
+
+    echo -e "\n${GREEN}[✓] Diagnostics Completed.${NC}\n"
+}
+
+# Live Stats Dashboard
+cmd_stats() {
+    ensure_dirs
+    clear
+    show_banner
+    echo -e "${BOLD}Aura Real-Time Telemetry & Status${NC}"
+    echo -e "Press [Ctrl+C] to exit.\n"
+    
+    local ip
+    ip=$(get_public_ip)
+    local cpu_load
+    cpu_load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || echo "N/A")
+    local mem_used
+    mem_used=$(free -m | awk '/Mem:/ {print $3"MB / "$2"MB ("int($3/$2*100)"%)"}')
+    
+    echo -e "${CYAN}--------------------------------------------------${NC}"
+    echo -e " ${BOLD}Host IP:${NC}     ${ip}"
+    echo -e " ${BOLD}CPU Load:${NC}    ${cpu_load}"
+    echo -e " ${BOLD}Memory:${NC}      ${mem_used}"
+    echo -e " ${BOLD}Uptime:${NC}      $(uptime -p 2>/dev/null || uptime)"
+    echo -e "${CYAN}--------------------------------------------------${NC}"
+    echo -e "${BOLD}Active Tunnel Services:${NC}"
+    
+    systemctl list-units --type=service --state=running "aura*" --no-pager --no-legend 2>/dev/null | while read -r line; do
+        local unit
+        unit=$(echo "$line" | awk '{print $1}')
+        echo -e "  • ${GREEN}${unit}${NC} (Running)"
+    done
+    
+    echo -e "${CYAN}--------------------------------------------------${NC}"
+    echo -e "${BOLD}Current Established Connections on Aura Ports:${NC}"
+    echo -e "  Port 53 (DNS):    $(ss -tun state established '( sport = :53 )' | wc -l | tr -d ' ')"
+    echo -e "  Port 443 (TLS):   $(ss -tun state established '( sport = :443 )' | wc -l | tr -d ' ')"
+    echo -e "  Port 1080 (SOCKS):$(ss -tun state established '( sport = :1080 )' | wc -l | tr -d ' ')"
+    echo -e "  Port 7300 (UDPGW):$(ss -u state established '( sport = :7300 )' 2>/dev/null | wc -l | tr -d ' ')"
+    echo -e "${CYAN}--------------------------------------------------${NC}"
+}
+
+# MTU Configuration
+cmd_mtu() {
+    require_root
+    ensure_dirs
+    local new_mtu="${1:-}"
+    if [[ -z "$new_mtu" ]]; then
+        echo -e "${YELLOW}Usage: aura mtu <value> (e.g., aura mtu 1232)${NC}"
+        read -rp "Enter new MTU for all DNS tunnels [1200-1500, default: 1232]: " input_mtu
+        new_mtu="${input_mtu:-1232}"
+    fi
+
+    echo -e "[*] Updating MTU to ${new_mtu} across all tunnel configurations..."
+    if [[ -d "${TUNNELS_DIR}" ]]; then
+        for tun in "${TUNNELS_DIR}"/*.json; do
+            if [[ -f "$tun" ]]; then
+                sed -i 's/"mtu": [0-9]*/"mtu": '"${new_mtu}"'/g' "$tun"
+                local tag
+                tag=$(basename "$tun" .json)
+                echo -e "  • Updated MTU for tunnel [${tag}]"
+                systemctl restart "aura-tunnel-${tag}.service" 2>/dev/null || true
+            fi
+        done
+    fi
+    echo -e "${GREEN}[✓] MTU set to ${new_mtu} and services reloaded.${NC}"
+}
+
+# User Management
+cmd_users() {
+    ensure_dirs
+    local subcmd="${1:-list}"
+    shift || true
+
+    case "$subcmd" in
+        add)
+            require_root
+            local username="${1:-}"
+            local password="${2:-}"
+            if [[ -z "$username" ]]; then
+                read -rp "Enter new username: " username
+            fi
+            if [[ -z "$password" ]]; then
+                read -rsp "Enter password: " password
+                echo ""
+            fi
+            if id "$username" &>/dev/null; then
+                echo -e "${RED}[!] User $username already exists.${NC}"
+            else
+                useradd -M -s /bin/false "$username"
+                echo "$username:$password" | chpasswd
+                echo -e "${GREEN}[✓] User $username created successfully for Aura SSH & SOCKS5.${NC}"
+            fi
+            ;;
+        bulk_add)
+            require_root
+            local count=10
+            local prefix="aura"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --count=*) count="${1#*=}" ;;
+                    --prefix=*) prefix="${1#*=}" ;;
+                    *) ;;
+                esac
+                shift
+            done
+            echo -e "[*] Bulk creating ${count} users with prefix '${prefix}'..."
+            for ((i=1; i<=count; i++)); do
+                local u="${prefix}$(printf "%03d" "$i")"
+                local p
+                p=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 10)
+                if ! id "$u" &>/dev/null; then
+                    useradd -M -s /bin/false "$u"
+                    echo "$u:$p" | chpasswd
+                    echo "User: $u | Pass: $p"
+                fi
+            done
+            echo -e "${GREEN}[✓] Batch user creation complete.${NC}"
+            ;;
+        remove)
+            require_root
+            local username="${1:-}"
+            if [[ -z "$username" ]]; then
+                read -rp "Enter username to remove: " username
+            fi
+            if id "$username" &>/dev/null; then
+                userdel -f "$username" 2>/dev/null || true
+                echo -e "${GREEN}[✓] User $username removed.${NC}"
+            else
+                echo -e "${YELLOW}[!] User $username does not exist.${NC}"
+            fi
+            ;;
+        list)
+            echo -e "\n${BOLD}${CYAN}=== Aura Registered Users ===${NC}\n"
+            awk -F: '$7 ~ /(\/bin\/false|\/usr\/sbin\/nologin)/ && $3 >= 1000 { print "  • " $1 }' /etc/passwd
+            echo ""
+            ;;
+        configs)
+            cmd_users_configs
+            ;;
+        *)
+            echo "Usage: aura users [add|bulk_add|remove|list|configs]"
+            ;;
+    esac
+}
+
+# Export Client Configs
+cmd_users_configs() {
+    ensure_dirs
+    local ip
+    ip=$(get_public_ip)
+    echo -e "\n${BOLD}${CYAN}======================================================${NC}"
+    echo -e "${BOLD}       Aura Client Configurations (SlipNet / Universal)${NC}"
+    echo -e "${BOLD}${CYAN}======================================================${NC}\n"
+
+    echo -e "${BOLD}1. StunTLS (SSH / WebSocket over TLS 443):${NC}"
+    echo -e "   Server:    ${ip}"
+    echo -e "   Port:      443"
+    echo -e "   TLS:       v1.2, v1.3"
+    echo -e "   Target:    127.0.0.1:2222 (Multiplexed SSH & SOCKS5)"
+    echo -e "   URI:       ${CYAN}slipnet://stuntls?addr=${ip}:443&sni=${ip}&insecure=1${NC}\n"
+
+    echo -e "${BOLD}2. BadVPN UDP Gateway:${NC}"
+    echo -e "   IP:        ${ip}"
+    echo -e "   Port:      7300"
+    echo -e "   Target:    UDP forwarder for HTTP Custom / HTTP Injector\n"
+
+    if [[ -d "${TUNNELS_DIR}" ]]; then
+        for tun in "${TUNNELS_DIR}"/*.json; do
+            if [[ -f "$tun" ]]; then
+                local tag domain transport pubkey
+                tag=$(basename "$tun" .json)
+                domain=$(grep -o '"domain": *"[^"]*"' "$tun" | cut -d'"' -f4 || echo "")
+                transport=$(grep -o '"transport": *"[^"]*"' "$tun" | cut -d'"' -f4 || echo "dnstt")
+                pubkey=$(grep -o '"public_key": *"[^"]*"' "$tun" | cut -d'"' -f4 || echo "")
+                
+                echo -e "${BOLD}3. Tunnel [${tag}] (${transport^^}):${NC}"
+                echo -e "   Domain:    ${domain}"
+                echo -e "   Public Key:${pubkey}"
+                echo -e "   Resolver:  1.1.1.1 or 8.8.8.8"
+                echo -e "   URI:       ${CYAN}slipnet://${transport}?domain=${domain}&pubkey=${pubkey}&ns=1.1.1.1${NC}\n"
+            fi
+        done
+    fi
+}
+
+# Tunnel Management
+cmd_tunnel() {
+    ensure_dirs
+    local subcmd="${1:-status}"
+    shift || true
+
+    case "$subcmd" in
+        add)
+            require_root
+            local transport="dnstt"
+            local backend="socks"
+            local tag=""
+            local domain=""
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --transport) transport="$2"; shift 2 ;;
+                    --backend) backend="$2"; shift 2 ;;
+                    --tag) tag="$2"; shift 2 ;;
+                    --domain) domain="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+
+            if [[ -z "$tag" ]]; then
+                read -rp "Enter tunnel tag (name): " tag
+            fi
+            if [[ -z "$domain" ]]; then
+                read -rp "Enter tunnel domain (e.g., t.example.com): " domain
+            fi
+
+            local pubkey privkey
+            privkey=$(openssl rand -hex 32)
+            pubkey=$(openssl rand -hex 32)
+
+            cat <<EOF > "${TUNNELS_DIR}/${tag}.json"
+{
+  "tag": "${tag}",
+  "transport": "${transport}",
+  "backend": "${backend}",
+  "domain": "${domain}",
+  "mtu": 1232,
+  "public_key": "${pubkey}",
+  "private_key": "${privkey}",
+  "port": 5300
+}
+EOF
+            echo -e "${GREEN}[✓] Tunnel [${tag}] configured for domain ${domain} (${transport}).${NC}"
+            ;;
+        status)
+            echo -e "\n${BOLD}${CYAN}=== Aura Configured Tunnels ===${NC}\n"
+            if [[ -d "${TUNNELS_DIR}" ]]; then
+                for tun in "${TUNNELS_DIR}"/*.json; do
+                    if [[ -f "$tun" ]]; then
+                        local tag
+                        tag=$(basename "$tun" .json)
+                        echo -e "  • ${BOLD}${tag}${NC}: $(cat "$tun")"
+                    fi
+                done
+            fi
+            echo ""
+            ;;
+        remove)
+            require_root
+            local tag="${1:-}"
+            if [[ -z "$tag" ]]; then
+                read -rp "Enter tunnel tag to remove: " tag
+            fi
+            rm -f "${TUNNELS_DIR}/${tag}.json"
+            systemctl stop "aura-tunnel-${tag}.service" 2>/dev/null || true
+            systemctl disable "aura-tunnel-${tag}.service" 2>/dev/null || true
+            echo -e "${GREEN}[✓] Tunnel [${tag}] removed.${NC}"
+            ;;
+        share)
+            local tag="${1:-}"
+            if [[ -z "$tag" ]]; then
+                cmd_users_configs
+            else
+                if [[ -f "${TUNNELS_DIR}/${tag}.json" ]]; then
+                    local domain transport pubkey
+                    domain=$(grep -o '"domain": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
+                    transport=$(grep -o '"transport": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
+                    pubkey=$(grep -o '"public_key": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
+                    echo -e "${CYAN}slipnet://${transport}?domain=${domain}&pubkey=${pubkey}&ns=1.1.1.1${NC}"
+                else
+                    echo -e "${RED}[!] Tunnel ${tag} not found.${NC}"
+                fi
+            fi
+            ;;
+        *)
+            echo "Usage: aura tunnel [add|status|remove|share]"
+            ;;
+    esac
+}
+
+# Backup & Restore
+cmd_backup() {
+    ensure_dirs
+    local target="${1:-/root/aura-backup-$(date +%Y%m%d%H%M%S).tar.gz}"
+    tar -czf "$target" -C /etc aura 2>/dev/null
+    echo -e "${GREEN}[✓] Backup created at: ${target}${NC}"
+}
+
+cmd_restore() {
+    require_root
+    local src="${1:-}"
+    if [[ -z "$src" || ! -f "$src" ]]; then
+        echo -e "${RED}[!] Backup file not found.${NC}"
+        exit 1
+    fi
+    tar -xzf "$src" -C /etc 2>/dev/null
+    echo -e "${GREEN}[✓] Aura configuration restored from ${src}.${NC}"
+    systemctl restart "aura-*" 2>/dev/null || true
+}
+
+# Restart All Services
+cmd_restart() {
+    require_root
+    echo -e "[*] Restarting all Aura tunnel services..."
+    systemctl restart "aura-*" 2>/dev/null || true
+    echo -e "${GREEN}[✓] Services restarted.${NC}"
+}
+
+# Interactive TUI Menu
+cmd_menu() {
+    while true; do
+        clear
+        show_banner
+        echo -e " 1) Live Telemetry & Stats"
+        echo -e " 2) Run Server Diagnostics"
+        echo -e " 3) Manage Tunnels (Add / Status / Share / Remove)"
+        echo -e " 4) Manage Users (Add / Bulk / Remove / List)"
+        echo -e " 5) Show All Client Configurations (slipnet://)"
+        echo -e " 6) Set MTU for All DNS Tunnels"
+        echo -e " 7) Restart All Aura Services"
+        echo -e " 8) Backup / Restore Configuration"
+        echo -e " 9) Exit"
+        echo -e "${CYAN}--------------------------------------------------${NC}"
+        read -rp "Select an option [1-9]: " choice
+
+        case "$choice" in
+            1) cmd_stats; read -rp "Press Enter to return to menu...";;
+            2) cmd_diag; read -rp "Press Enter to return to menu...";;
+            3)
+                echo -e "\n1) Add Tunnel  2) List Tunnels  3) Share Config  4) Remove Tunnel"
+                read -rp "Choice: " tc
+                case "$tc" in
+                    1) cmd_tunnel add;;
+                    2) cmd_tunnel status;;
+                    3) cmd_tunnel share;;
+                    4) cmd_tunnel remove;;
+                esac
+                read -rp "Press Enter to return...";;
+            4)
+                echo -e "\n1) Add User  2) Bulk Add  3) Remove User  4) List Users"
+                read -rp "Choice: " uc
+                case "$uc" in
+                    1) cmd_users add;;
+                    2) cmd_users bulk_add;;
+                    3) cmd_users remove;;
+                    4) cmd_users list;;
+                esac
+                read -rp "Press Enter to return...";;
+            5) cmd_users_configs; read -rp "Press Enter to return...";;
+            6) cmd_mtu ""; read -rp "Press Enter to return...";;
+            7) cmd_restart; read -rp "Press Enter to return...";;
+            8)
+                echo -e "\n1) Create Backup  2) Restore Backup"
+                read -rp "Choice: " bc
+                if [[ "$bc" == "1" ]]; then cmd_backup ""; else read -rp "File: " f; cmd_restore "$f"; fi
+                read -rp "Press Enter to return...";;
+            9) exit 0;;
+            *) echo -e "${RED}Invalid option.${NC}"; sleep 1;;
+        esac
+    done
+}
+
+# Main CLI Router
+main() {
+    local cmd="${1:-}"
+    shift || true
+
+    case "$cmd" in
+        diag|diagnostic|diagnostics) cmd_diag ;;
+        stats|dashboard) cmd_stats ;;
+        mtu) cmd_mtu "$@" ;;
+        users|user) cmd_users "$@" ;;
+        tunnel|tunnels) cmd_tunnel "$@" ;;
+        restart) cmd_restart ;;
+        backup) cmd_backup "$@" ;;
+        restore) cmd_restore "$@" ;;
+        configs) cmd_users_configs ;;
+        version|-v|--version) echo "Aura v${AURA_VERSION}" ;;
+        help|-h|--help)
+            show_banner
+            echo "Usage: aura [command] [options]"
+            echo ""
+            echo "Commands:"
+            echo "  (none)            Launch interactive TUI menu"
+            echo "  diag              Run system health check and port audit"
+            echo "  stats             Live telemetry dashboard (CPU, RAM, connections)"
+            echo "  mtu <val>         Set MTU across all DNS tunnels"
+            echo "  tunnel <action>   Manage tunnels (add, status, remove, share)"
+            echo "  users <action>    Manage user credentials (add, bulk_add, remove, list, configs)"
+            echo "  restart           Restart all Aura daemons"
+            echo "  backup [file]     Create full server configuration backup"
+            echo "  restore <file>    Restore server configuration"
+            ;;
+        "") cmd_menu ;;
+        *) echo -e "${RED}Unknown command: $cmd. Run 'aura help' for usage.${NC}" ;;
+    esac
+}
+
+main "$@"

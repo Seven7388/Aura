@@ -1,0 +1,6 @@
+{
+  "summary": "Comprehensive implementation plan to transform the repository into Aura, a rebranded unified tunnel manager supporting all tunnels (DNSTT, NoizDNS, Slipstream, VayDNS, Soar, NaiveProxy, StunTLS, SOCKS5, OpenSSH) with an automated command-line installer, interactive server management CLI, complete repository files, and a high-density developer dashboard.",
+  "updatedAt": "2026-11-05T17:16:07.116273490Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

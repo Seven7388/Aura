@@ -1,0 +1,6 @@
+{
+  "name": "Aura — Unified Tunnel & Server Management Suite",
+  "description": "Installer repository, interactive CLI manager, and configuration scripts for Aura unified DNS & TLS tunnels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
