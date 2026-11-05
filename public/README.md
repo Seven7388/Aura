@@ -146,6 +146,27 @@ Just like Unida, you don't need any domain pre-configured in the repository file
 
 ---
 
+## All Configured Tunnels & Shared Links (Default Provisioning)
+
+Aura automatically provisions and activates all 10 tunnels upon installation. Client links are generated in **native SlipNet Base64 pipe-delimited format** (`slipnet://<base64>`), allowing seamless 1-tap clipboard import in the SlipNet Android app without decode errors:
+
+| # | Transport Protocol | Port & Endpoint | 1-Tap SlipNet Import Link & Parameters |
+| :--- | :--- | :--- | :--- |
+| **1** | **DNSTT** | `UDP :53` → `127.0.0.1:5300` | `slipnet://<base64_v22_payload>`<br>Zone: `t.<domain>` \| Curve25519 PubKey (64-char Hex) |
+| **2** | **NoizDNS** | `UDP :53` → `127.0.0.1:5301` | `slipnet://<base64_v22_payload>`<br>Zone: `n.<domain>` \| Base36 encoding & CDN prefix evasion |
+| **3** | **Slipstream** | `UDP :53` → `127.0.0.1:5302` | `slipnet://<base64_v22_payload>`<br>Zone: `s.<domain>` \| SNI: `s.<domain>` \| QUIC/DNS |
+| **4** | **VayDNS** | `UDP :53` → `127.0.0.1:5303` | `slipnet://<base64_v22_payload>`<br>Zone: `v.<domain>` \| KCP protocol with TXT records |
+| **5** | **Soar Direct** | `UDP :53` → `127.0.0.1:5304` | `slipnet://<base64_v29_payload>`<br>Zone: `r.<domain>` \| Direct outbound (No user login)<br>**PubKey Base64 (44 chars)**: `soar-server pubkey`<br>**PubKey Hex (64 chars)**: 32-byte Ed25519 hex |
+| **6** | **Soar SSH** | `UDP :53` → `127.0.0.1:5305` | `slipnet://<base64_v29_payload>`<br>Zone: `rs.<domain>` \| Routed to OpenSSH backend<br>**PubKey Base64 (44 chars)** & **PubKey Hex (64 chars)** |
+| **7** | **StunTLS** | `TCP :443` → `127.0.0.1:2222` | `slipnet://<base64_v22_payload>`<br>Host: `<server_ip>:443` \| WebSocket + TLS 1.2/1.3 Obfuscation |
+| **8** | **BadVPN UDPGW**| `UDP :7300` (Direct) | Host: `<server_ip>`, Port: `7300` (Set in HTTP Custom) |
+| **9** | **Dante SOCKS5**| `TCP :1080` (Direct / No Auth)| `socks5://<server_ip>:1080` (Direct proxy) |
+| **10**| **OpenSSH** | `TCP :22` (SSH Backend) | `ssh://<server_ip>:22` (Direct port forwarding) |
+
+All links are automatically saved on your server at `/etc/aura/client_links.txt` and can be retrieved anytime with `sudo aura configs` or `aura tunnel share <tag>`.
+
+---
+
 ## File Locations
 
 | Path | Purpose |

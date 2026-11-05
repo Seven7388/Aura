@@ -1,6 +1,6 @@
 {
-  "summary": "Comprehensive implementation plan to transform the repository into Aura, a rebranded unified tunnel manager supporting all tunnels (DNSTT, NoizDNS, Slipstream, VayDNS, Soar, NaiveProxy, StunTLS, SOCKS5, OpenSSH) with an automated command-line installer, interactive server management CLI, complete repository files, and a high-density developer dashboard.",
-  "updatedAt": "2026-11-05T17:16:07.116273490Z",
+  "summary": "Implementation plan addressing the two SlipNet client errors: implementing native base64 pipe-delimited slipnet:// URI encoding (v22/v29) for 1-tap Android import, and generating valid 32-byte Ed25519 Soar public keys in both Base64 (44-char) and Hexadecimal (64-char) formats with correct subdomain routing.",
+  "updatedAt": "2026-11-05T18:48:55.155031167Z",
   "requestFeedback": true,
   "userFacing": true
 }

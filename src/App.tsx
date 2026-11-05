@@ -31,6 +31,96 @@ import configText from '../public/config.json?raw';
 
 type TabKey = 'installer' | 'cli' | 'readme' | 'config';
 
+interface SlipNetOptions {
+  version?: '22' | '29';
+  tunnelType: string;
+  name: string;
+  domain: string;
+  pubkey?: string;
+  sshEnabled?: boolean;
+  sshUser?: string;
+  sshPass?: string;
+  sshPort?: string;
+  wsEnabled?: boolean;
+}
+
+function buildSlipNetUri(options: SlipNetOptions): string {
+  const version = options.version || '22';
+  const totalFields = version === '29' ? 82 : 60;
+  const fields = new Array(totalFields).fill('');
+
+  fields[0] = version;
+  fields[1] = options.tunnelType;
+  fields[2] = options.name;
+  fields[3] = options.domain;
+  fields[4] = '8.8.8.8:53:0';
+  fields[5] = '0';
+  fields[6] = '5000';
+  fields[7] = 'bbr';
+  fields[8] = '1080';
+  fields[9] = '127.0.0.1';
+  fields[10] = '0';
+  fields[11] = options.pubkey || '';
+  fields[14] = options.sshEnabled ? '1' : '0';
+  fields[15] = options.sshUser || '';
+  fields[16] = options.sshPass || '';
+  fields[17] = options.sshPort || '22';
+  fields[18] = '0';
+  fields[19] = '127.0.0.1';
+  fields[20] = '0';
+  fields[22] = 'udp';
+  fields[23] = 'password';
+  fields[27] = '0';
+  fields[28] = '443';
+  fields[31] = '0';
+  fields[33] = '0';
+  fields[34] = '0';
+  fields[36] = '0';
+  fields[38] = '0';
+  fields[39] = '0';
+  fields[40] = '1080';
+  fields[41] = '0';
+  fields[42] = 'txt';
+  fields[43] = '101';
+  fields[44] = '0';
+  fields[45] = '0';
+  fields[46] = '0';
+  fields[47] = '0';
+  fields[48] = '0';
+  fields[49] = '0';
+  fields[50] = '0';
+  fields[53] = '8080';
+  fields[55] = options.wsEnabled ? '1' : '0';
+  fields[56] = '/';
+  fields[57] = '1';
+
+  if (version === '29') {
+    fields[60] = 'roundrobin';
+    fields[61] = '3';
+    fields[63] = 'tls';
+    fields[64] = 'ws';
+    fields[65] = '/';
+    fields[67] = '443';
+    fields[68] = '1';
+    fields[69] = 'micro';
+    fields[70] = '300';
+    fields[72] = '0';
+    fields[73] = '1';
+    fields[74] = '0';
+    fields[75] = '8';
+    fields[77] = '0';
+    fields[79] = '0';
+    fields[81] = 'auto';
+  }
+
+  const payload = fields.join('|');
+  try {
+    return `slipnet://${btoa(payload)}`;
+  } catch {
+    return `slipnet://${payload}`;
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('installer');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -409,13 +499,13 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-3 text-xs">
               <label className="text-slate-400 flex items-center gap-1.5">
-                Test Domain:
+                Base Domain:
                 <input
                   type="text"
                   value={clientTestDomain}
                   onChange={(e) => setClientTestDomain(e.target.value)}
                   className="bg-[#0B0F17] border border-slate-700 rounded px-2.5 py-1 text-slate-200 font-mono text-xs w-36"
-                  placeholder="t.yourdomain.com"
+                  placeholder="yourdomain.com"
                 />
               </label>
               <label className="text-slate-400 flex items-center gap-1.5">
@@ -428,46 +518,346 @@ export default function App() {
                   placeholder="127.0.0.1"
                 />
               </label>
+              <button
+                onClick={() => {
+                  const cleanDomain = clientTestDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^[tnsrvRS]\./, '') || 'yourdomain.com';
+                  const dnsttKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+                  const soarB64Key = 'tCd7Qm7FolQBkQfQUWLVrLBktDMirri+SlUaAHT1gxM=';
+                  const allLinksText = [
+                    '==================================================================',
+                    '           AURA CONFIGURED ALL TUNNELS — SHARED CLIENT LINKS',
+                    '==================================================================',
+                    `[1] DNSTT Tunnel (Curve25519 / DNS):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '22', tunnelType: 'dnstt', name: 'dnstt-aura', domain: `t.${cleanDomain}`, pubkey: dnsttKey })}`,
+                    `    Manual: Domain=t.${cleanDomain} | Port=UDP 5300 | PubKey=${dnsttKey}`,
+                    ``,
+                    `[2] NoizDNS Tunnel (DPI Evasion / Base36):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '22', tunnelType: 'sayedns', name: 'noizdns-aura', domain: `n.${cleanDomain}`, pubkey: dnsttKey })}`,
+                    `    Manual: Domain=n.${cleanDomain} | Port=UDP 5301 | PubKey=${dnsttKey}`,
+                    ``,
+                    `[3] Slipstream (QUIC-over-DNS):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '22', tunnelType: 'ss', name: 'slipstream-aura', domain: `s.${cleanDomain}` })}`,
+                    `    Manual: Domain=s.${cleanDomain} | Port=UDP 5302 | SNI=s.${cleanDomain}`,
+                    ``,
+                    `[4] VayDNS (KCP DNS / Curve25519):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '22', tunnelType: 'vaydns', name: 'vaydns-aura', domain: `v.${cleanDomain}`, pubkey: dnsttKey })}`,
+                    `    Manual: Domain=v.${cleanDomain} | Port=UDP 5303 | PubKey=${dnsttKey}`,
+                    ``,
+                    `[5] Soar Multipath DNS (Direct / No Login):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '29', tunnelType: 'soar', name: 'soar-direct-aura', domain: `r.${cleanDomain}`, pubkey: soarB64Key })}`,
+                    `    Manual: Domain=r.${cleanDomain} | Port=UDP 5304`,
+                    `    PubKey (Base64 - 44 chars): ${soarB64Key}`,
+                    `    PubKey (Hex - 64 chars)   : b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313`,
+                    ``,
+                    `[6] Soar Multipath DNS (SSH Backend):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '29', tunnelType: 'soar_ssh', name: 'soar-ssh-aura', domain: `rs.${cleanDomain}`, pubkey: soarB64Key, sshEnabled: true, sshUser: 'root', sshPort: '22' })}`,
+                    `    Manual: Domain=rs.${cleanDomain} | Port=UDP 5305`,
+                    `    PubKey (Base64 - 44 chars): ${soarB64Key}`,
+                    `    PubKey (Hex - 64 chars)   : b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313`,
+                    ``,
+                    `[7] StunTLS (Port 443 - SSH/WS over TLS 1.2/1.3):`,
+                    `    1-Tap SlipNet Import Link:`,
+                    `    ${buildSlipNetUri({ version: '22', tunnelType: 'ssh', name: 'stuntls-aura', domain: clientTestIp, sshEnabled: true, sshUser: 'root', sshPort: '443', wsEnabled: true })}`,
+                    `    Manual: Host=${clientTestIp}:443 | SNI=${clientTestIp} | WebSocket=/`,
+                    ``,
+                    `[8] Dante SOCKS5 Proxy (Direct / No Auth):`,
+                    `    socks5://${clientTestIp}:1080`,
+                    ``,
+                    `[9] BadVPN UDPGW (UDP Gateway for HTTP Custom / SSH Apps):`,
+                    `    Host: ${clientTestIp} | UDPGW Port: 7300`,
+                    ``,
+                    `[10] OpenSSH Port Forwarding:`,
+                    `    ssh://${clientTestIp}:22`,
+                    '=================================================================='
+                  ].join('\n');
+                  copyToClipboard(allLinksText, 'copy-all-links');
+                }}
+                className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium text-xs transition-colors shadow-sm"
+              >
+                {copiedKey === 'copy-all-links' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedKey === 'copy-all-links' ? 'All Links Copied!' : 'Copy All Links'}</span>
+              </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* DNSTT SlipNet Link */}
-            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">DNSTT Tunnel (Curve25519)</span>
-                <button
-                  onClick={() => copyToClipboard(`slipnet://dnstt?domain=${clientTestDomain}&pubkey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&ns=1.1.1.1`, 'slipnet-dnstt')}
-                  className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
-                >
-                  {copiedKey === 'slipnet-dnstt' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedKey === 'slipnet-dnstt' ? 'Copied' : 'Copy URI'}
-                </button>
-              </div>
-              <p className="text-xs text-slate-400">Bypasses deep packet inspection through DNS recursive resolvers.</p>
-              <div className="bg-slate-900/80 p-2.5 rounded font-mono text-xs text-slate-300 break-all select-all">
-                slipnet://dnstt?domain={clientTestDomain}&pubkey=&lt;server-pubkey&gt;&ns=1.1.1.1
-              </div>
-            </div>
+          {(() => {
+            const cleanDomain = clientTestDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^[tnsrvRS]\./, '') || 'yourdomain.com';
+            const dnsttHexKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+            const soarB64Key = 'tCd7Qm7FolQBkQfQUWLVrLBktDMirri+SlUaAHT1gxM=';
+            const soarHexKey = 'b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313';
 
-            {/* StunTLS 443 Link */}
-            <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">StunTLS Port 443 (HTTPS)</span>
-                <button
-                  onClick={() => copyToClipboard(`slipnet://stuntls?addr=${clientTestIp}:443&sni=${clientTestIp}&insecure=1`, 'slipnet-stuntls')}
-                  className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
-                >
-                  {copiedKey === 'slipnet-stuntls' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedKey === 'slipnet-stuntls' ? 'Copied' : 'Copy URI'}
-                </button>
+            const uriDnstt = buildSlipNetUri({ version: '22', tunnelType: 'dnstt', name: 'dnstt-aura', domain: `t.${cleanDomain}`, pubkey: dnsttHexKey });
+            const uriNoiz = buildSlipNetUri({ version: '22', tunnelType: 'sayedns', name: 'noizdns-aura', domain: `n.${cleanDomain}`, pubkey: dnsttHexKey });
+            const uriSlip = buildSlipNetUri({ version: '22', tunnelType: 'ss', name: 'slipstream-aura', domain: `s.${cleanDomain}` });
+            const uriVay = buildSlipNetUri({ version: '22', tunnelType: 'vaydns', name: 'vaydns-aura', domain: `v.${cleanDomain}`, pubkey: dnsttHexKey });
+            const uriSoarDir = buildSlipNetUri({ version: '29', tunnelType: 'soar', name: 'soar-direct-aura', domain: `r.${cleanDomain}`, pubkey: soarB64Key });
+            const uriSoarSsh = buildSlipNetUri({ version: '29', tunnelType: 'soar_ssh', name: 'soar-ssh-aura', domain: `rs.${cleanDomain}`, pubkey: soarB64Key, sshEnabled: true, sshUser: 'root', sshPort: '22' });
+            const uriStunTls = buildSlipNetUri({ version: '22', tunnelType: 'ssh', name: 'stuntls-aura', domain: clientTestIp, sshEnabled: true, sshUser: 'root', sshPort: '443', wsEnabled: true });
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+                {/* 1. DNSTT */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-emerald-400 uppercase tracking-wider">1. DNSTT (Curve25519)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriDnstt, 'link-dnstt')}
+                      className="px-2 py-0.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-dnstt' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-dnstt' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">DNS Tunnel via recursive resolvers (Port 5300)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-emerald-300 break-all select-all border border-emerald-900/30">
+                    {uriDnstt}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">t.{cleanDomain}</span></div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key: <span className="font-mono text-slate-300">{dnsttHexKey.slice(0, 16)}...</span></span>
+                      <button onClick={() => copyToClipboard(dnsttHexKey, 'key-dnstt')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-dnstt' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. NoizDNS */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-teal-400 uppercase tracking-wider">2. NoizDNS (DPI Evasion)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriNoiz, 'link-noiz')}
+                      className="px-2 py-0.5 bg-teal-600/20 hover:bg-teal-600/30 text-teal-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-noiz' ? <Check className="w-3 h-3 text-teal-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-noiz' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Base36 & CDN prefix stripping (Port 5301)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-teal-300 break-all select-all border border-teal-900/30">
+                    {uriNoiz}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">n.{cleanDomain}</span></div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key: <span className="font-mono text-slate-300">{dnsttHexKey.slice(0, 16)}...</span></span>
+                      <button onClick={() => copyToClipboard(dnsttHexKey, 'key-noiz')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-noiz' ? <Check className="w-3 h-3 text-teal-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Slipstream */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-sky-400 uppercase tracking-wider">3. Slipstream (QUIC/DNS)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriSlip, 'link-slip')}
+                      className="px-2 py-0.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-slip' ? <Check className="w-3 h-3 text-sky-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-slip' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">QUIC-based encrypted DNS tunnel (Port 5302)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-sky-300 break-all select-all border border-sky-900/30">
+                    {uriSlip}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">s.{cleanDomain}</span></div>
+                    <div>SNI: <span className="font-mono text-slate-300">s.{cleanDomain}</span></div>
+                  </div>
+                </div>
+
+                {/* 4. VayDNS */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-indigo-400 uppercase tracking-wider">4. VayDNS (KCP)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriVay, 'link-vay')}
+                      className="px-2 py-0.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-vay' ? <Check className="w-3 h-3 text-indigo-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-vay' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">KCP UDP protocol with TXT records (Port 5303)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-indigo-300 break-all select-all border border-indigo-900/30">
+                    {uriVay}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">v.{cleanDomain}</span></div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key: <span className="font-mono text-slate-300">{dnsttHexKey.slice(0, 16)}...</span></span>
+                      <button onClick={() => copyToClipboard(dnsttHexKey, 'key-vay')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-vay' ? <Check className="w-3 h-3 text-indigo-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. Soar Direct */}
+                <div className="bg-[#0B0F17] border border-purple-500/30 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-purple-400 uppercase tracking-wider">5. Soar Direct (Multipath)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriSoarDir, 'link-soar-dir')}
+                      className="px-2 py-0.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-soar-dir' ? <Check className="w-3 h-3 text-purple-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-soar-dir' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Direct outbound without login (Port 5304)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-purple-300 break-all select-all border border-purple-900/30">
+                    {uriSoarDir}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">r.{cleanDomain}</span></div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key (Base64 - 44c): <span className="font-mono text-purple-300">{soarB64Key.slice(0, 14)}...</span></span>
+                      <button onClick={() => copyToClipboard(soarB64Key, 'key-soar-b64-1')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-soar-b64-1' ? <Check className="w-3 h-3 text-purple-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key (Hex - 64c): <span className="font-mono text-purple-300">{soarHexKey.slice(0, 14)}...</span></span>
+                      <button onClick={() => copyToClipboard(soarHexKey, 'key-soar-hex-1')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-soar-hex-1' ? <Check className="w-3 h-3 text-purple-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 6. Soar SSH */}
+                <div className="bg-[#0B0F17] border border-fuchsia-500/30 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-fuchsia-400 uppercase tracking-wider">6. Soar SSH</span>
+                    <button
+                      onClick={() => copyToClipboard(uriSoarSsh, 'link-soar-ssh')}
+                      className="px-2 py-0.5 bg-fuchsia-600/20 hover:bg-fuchsia-600/30 text-fuchsia-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-soar-ssh' ? <Check className="w-3 h-3 text-fuchsia-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-soar-ssh' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Multipath DNS to SSH backend (Port 5305)</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-fuchsia-300 break-all select-all border border-fuchsia-900/30">
+                    {uriSoarSsh}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Zone: <span className="font-mono text-slate-300">rs.{cleanDomain}</span></div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key (Base64 - 44c): <span className="font-mono text-fuchsia-300">{soarB64Key.slice(0, 14)}...</span></span>
+                      <button onClick={() => copyToClipboard(soarB64Key, 'key-soar-b64-2')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-soar-b64-2' ? <Check className="w-3 h-3 text-fuchsia-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="truncate">Key (Hex - 64c): <span className="font-mono text-fuchsia-300">{soarHexKey.slice(0, 14)}...</span></span>
+                      <button onClick={() => copyToClipboard(soarHexKey, 'key-soar-hex-2')} className="text-slate-400 hover:text-white">
+                        {copiedKey === 'key-soar-hex-2' ? <Check className="w-3 h-3 text-fuchsia-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 7. StunTLS 443 */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-cyan-400 uppercase tracking-wider">7. StunTLS (Port 443)</span>
+                    <button
+                      onClick={() => copyToClipboard(uriStunTls, 'link-stuntls')}
+                      className="px-2 py-0.5 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-stuntls' ? <Check className="w-3 h-3 text-cyan-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-stuntls' ? 'Copied' : '1-Tap Link'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Strict TLS 1.2/1.3 Obfuscation to Multiplexer</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-cyan-300 break-all select-all border border-cyan-900/30">
+                    {uriStunTls}
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div>Host: <span className="font-mono text-slate-300">{clientTestIp}:443</span></div>
+                    <div>SNI: <span className="font-mono text-slate-300">{clientTestIp}</span> | Path: <span className="font-mono text-slate-300">/</span></div>
+                  </div>
+                </div>
+
+                {/* 8. Dante SOCKS5 */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-emerald-400 uppercase tracking-wider">8. Dante SOCKS5 (Port 1080)</span>
+                    <button
+                      onClick={() => copyToClipboard(`socks5://${clientTestIp}:1080`, 'link-socks5')}
+                      className="px-2 py-0.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-socks5' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-socks5' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Direct SOCKS5 proxy without authentication</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-slate-300 break-all select-all border border-slate-800">
+                    socks5://{clientTestIp}:1080
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400">
+                    Host: <span className="font-mono text-slate-300">{clientTestIp}</span> | Port: <span className="font-mono text-slate-300">1080</span>
+                  </div>
+                </div>
+
+                {/* 9. BadVPN UDPGW */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-amber-400 uppercase tracking-wider">9. BadVPN UDPGW (Port 7300)</span>
+                    <button
+                      onClick={() => copyToClipboard(`${clientTestIp}:7300`, 'link-udpgw')}
+                      className="px-2 py-0.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-udpgw' ? <Check className="w-3 h-3 text-amber-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-udpgw' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">UDP Gateway for HTTP Custom / Injector</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-amber-300 break-all select-all border border-amber-900/30">
+                    Host: {clientTestIp} | UDPGW Port: 7300
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400">
+                    In HTTP Custom: UDPGW Port = <span className="font-mono text-amber-400">7300</span>
+                  </div>
+                </div>
+
+                {/* 10. OpenSSH */}
+                <div className="bg-[#0B0F17] border border-slate-800 rounded-lg p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-blue-400 uppercase tracking-wider">10. OpenSSH (Port 22)</span>
+                    <button
+                      onClick={() => copyToClipboard(`ssh://${clientTestIp}:22`, 'link-ssh')}
+                      className="px-2 py-0.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded flex items-center gap-1 font-medium transition-colors"
+                    >
+                      {copiedKey === 'link-ssh' ? <Check className="w-3 h-3 text-blue-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedKey === 'link-ssh' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Direct SSH port forwarding backend</p>
+                  <div className="bg-slate-900/90 p-2 rounded font-mono text-[10px] text-slate-300 break-all select-all border border-slate-800">
+                    ssh://{clientTestIp}:22
+                  </div>
+                  <div className="pt-1 border-t border-slate-800/60 text-[11px] text-slate-400">
+                    SSH Port: <span className="font-mono text-slate-300">22</span> (or via Multiplexer :2222)
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-slate-400">Obfuscated TLS 1.2/1.3 connection forwarding to Protocol Multiplexer.</p>
-              <div className="bg-slate-900/80 p-2.5 rounded font-mono text-xs text-slate-300 break-all select-all">
-                slipnet://stuntls?addr={clientTestIp}:443&sni={clientTestIp}&insecure=1
-              </div>
-            </div>
-          </div>
+            );
+          })()}
         </section>
 
         {/* CLI Interactive Command Cheat Sheet */}

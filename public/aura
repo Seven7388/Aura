@@ -33,6 +33,98 @@ require_root() {
     fi
 }
 
+# Helper: Generate Native SlipNet Base64 Pipe-Delimited URIs (v22 / v29)
+generate_slipnet_uri() {
+    local version="$1"       # "22" or "29"
+    local tunnel_type="$2"   # "dnstt", "sayedns", "ss", "vaydns", "soar", "soar_ssh", "ssh"
+    local name="$3"          # Profile Name
+    local domain="$4"        # Tunnel Domain or Server Address
+    local pubkey="${5:-}"    # Hex or Base64 Public Key
+    local ssh_enabled="${6:-0}"
+    local ssh_user="${7:-}"
+    local ssh_pass="${8:-}"
+    local ssh_port="${9:-22}"
+    local ws_enabled="${10:-0}"
+
+    local total_fields=60
+    if [[ "$version" == "29" ]]; then
+        total_fields=82
+    fi
+
+    local -a fields
+    for ((i=0; i<total_fields; i++)); do
+        fields[i]=""
+    done
+
+    fields[0]="${version}"
+    fields[1]="${tunnel_type}"
+    fields[2]="${name}"
+    fields[3]="${domain}"
+    fields[4]="8.8.8.8:53:0"
+    fields[5]="0"
+    fields[6]="5000"
+    fields[7]="bbr"
+    fields[8]="1080"
+    fields[9]="127.0.0.1"
+    fields[10]="0"
+    fields[11]="${pubkey}"
+    fields[14]="${ssh_enabled}"
+    fields[15]="${ssh_user}"
+    fields[16]="${ssh_pass}"
+    fields[17]="${ssh_port}"
+    fields[18]="0"
+    fields[19]="127.0.0.1"
+    fields[20]="0"
+    fields[22]="udp"
+    fields[23]="password"
+    fields[27]="0"
+    fields[28]="443"
+    fields[31]="0"
+    fields[33]="0"
+    fields[34]="0"
+    fields[36]="0"
+    fields[38]="0"
+    fields[39]="0"
+    fields[40]="1080"
+    fields[41]="0"
+    fields[42]="txt"
+    fields[43]="101"
+    fields[44]="0"
+    fields[45]="0"
+    fields[46]="0"
+    fields[47]="0"
+    fields[48]="0"
+    fields[49]="0"
+    fields[50]="0"
+    fields[53]="8080"
+    fields[55]="${ws_enabled}"
+    fields[56]="/"
+    fields[57]="1"
+
+    if [[ "$version" == "29" ]]; then
+        fields[60]="roundrobin"
+        fields[61]="3"
+        fields[63]="tls"
+        fields[64]="ws"
+        fields[65]="/"
+        fields[67]="443"
+        fields[68]="1"
+        fields[69]="micro"
+        fields[70]="300"
+        fields[72]="0"
+        fields[73]="1"
+        fields[74]="0"
+        fields[75]="8"
+        fields[77]="0"
+        fields[79]="0"
+        fields[81]="auto"
+    fi
+
+    local IFS="|"
+    local payload="${fields[*]}"
+    echo "slipnet://$(echo -n "$payload" | base64 -w0 2>/dev/null || echo -n "$payload" | base64 | tr -d '\n')"
+}
+
 # Ensure directory structure exists
 ensure_dirs() {
     mkdir -p "${CONFIG_DIR}" "${TUNNELS_DIR}" "${CERTS_DIR}" "${LOGS_DIR}"
@@ -305,25 +397,32 @@ cmd_users() {
 # Export Client Configs
 cmd_users_configs() {
     ensure_dirs
+    local links_file="${CONFIG_DIR}/client_links.txt"
+    if [[ -f "$links_file" ]]; then
+        cat "$links_file"
+        return 0
+    fi
+
     local ip
     ip=$(get_public_ip)
     echo -e "\n${BOLD}${CYAN}======================================================${NC}"
-    echo -e "${BOLD}       Aura Client Configurations (SlipNet / Universal)${NC}"
+    echo -e "${BOLD}       Aura Client Configurations (All Tunnels)${NC}"
     echo -e "${BOLD}${CYAN}======================================================${NC}\n"
 
-    echo -e "${BOLD}1. StunTLS (SSH / WebSocket over TLS 443):${NC}"
-    echo -e "   Server:    ${ip}"
-    echo -e "   Port:      443"
-    echo -e "   TLS:       v1.2, v1.3"
-    echo -e "   Target:    127.0.0.1:2222 (Multiplexed SSH & SOCKS5)"
-    echo -e "   URI:       ${CYAN}slipnet://stuntls?addr=${ip}:443&sni=${ip}&insecure=1${NC}\n"
+    echo -e "${BOLD}[1] StunTLS (SSH / WebSocket over TLS 443):${NC}"
+    echo -e "    URI: ${CYAN}slipnet://stuntls?addr=${ip}:443&sni=${ip}&insecure=1${NC}\n"
 
-    echo -e "${BOLD}2. BadVPN UDP Gateway:${NC}"
-    echo -e "   IP:        ${ip}"
-    echo -e "   Port:      7300"
-    echo -e "   Target:    UDP forwarder for HTTP Custom / HTTP Injector\n"
+    echo -e "${BOLD}[2] Dante SOCKS5 Proxy (Port 1080):${NC}"
+    echo -e "    URI: ${CYAN}socks5://${ip}:1080${NC}\n"
+
+    echo -e "${BOLD}[3] BadVPN UDP Gateway (Port 7300):${NC}"
+    echo -e "    Server: ${ip}:7300 (For HTTP Custom / SSH VPN)\n"
+
+    echo -e "${BOLD}[4] OpenSSH Forwarding (Port 22):${NC}"
+    echo -e "    Server: ${ip}:22\n"
 
     if [[ -d "${TUNNELS_DIR}" ]]; then
+        local idx=5
         for tun in "${TUNNELS_DIR}"/*.json; do
             if [[ -f "$tun" ]]; then
                 local tag domain transport pubkey
@@ -332,11 +431,10 @@ cmd_users_configs() {
                 transport=$(grep -o '"transport": *"[^"]*"' "$tun" | cut -d'"' -f4 || echo "dnstt")
                 pubkey=$(grep -o '"public_key": *"[^"]*"' "$tun" | cut -d'"' -f4 || echo "")
                 
-                echo -e "${BOLD}3. Tunnel [${tag}] (${transport^^}):${NC}"
-                echo -e "   Domain:    ${domain}"
-                echo -e "   Public Key:${pubkey}"
-                echo -e "   Resolver:  1.1.1.1 or 8.8.8.8"
-                echo -e "   URI:       ${CYAN}slipnet://${transport}?domain=${domain}&pubkey=${pubkey}&ns=1.1.1.1${NC}\n"
+                echo -e "${BOLD}[${idx}] Tunnel [${tag}] (${transport^^}):${NC}"
+                echo -e "    Domain: ${domain}"
+                echo -e "    URI:    ${CYAN}slipnet://${transport}?domain=${domain}&pubkey=${pubkey}&ns=1.1.1.1${NC}\n"
+                ((idx++))
             fi
         done
     fi
@@ -421,11 +519,27 @@ EOF
                 cmd_users_configs
             else
                 if [[ -f "${TUNNELS_DIR}/${tag}.json" ]]; then
-                    local domain transport pubkey
-                    domain=$(grep -o '"domain": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
-                    transport=$(grep -o '"transport": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
-                    pubkey=$(grep -o '"public_key": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4)
-                    echo -e "${CYAN}slipnet://${transport}?domain=${domain}&pubkey=${pubkey}&ns=1.1.1.1${NC}"
+                    local domain transport pubkey_b64 pubkey_hex
+                    domain=$(grep -o '"domain": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4 || echo "")
+                    transport=$(grep -o '"transport": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4 || echo "")
+                    pubkey_b64=$(grep -o '"public_key_base64": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4 || grep -o '"public_key": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4 || echo "")
+                    pubkey_hex=$(grep -o '"public_key_hex": *"[^"]*"' "${TUNNELS_DIR}/${tag}.json" | cut -d'"' -f4 || echo "")
+
+                    local uri
+                    if [[ "$transport" == "soar" ]]; then
+                        uri=$(generate_slipnet_uri "29" "soar" "${tag}" "${domain}" "${pubkey_b64}")
+                        echo -e "${BOLD}${GREEN}[1-Tap SlipNet Import Link]:${NC}\n${CYAN}${uri}${NC}\n"
+                        echo -e "${BOLD}Manual Parameters:${NC}"
+                        echo -e "  Domain:                        ${domain}"
+                        echo -e "  Public Key (Base64 - 44 chars): ${pubkey_b64}"
+                        [[ -n "$pubkey_hex" ]] && echo -e "  Public Key (Hex - 64 chars)   : ${pubkey_hex}"
+                    else
+                        uri=$(generate_slipnet_uri "22" "${transport}" "${tag}" "${domain}" "${pubkey_b64}")
+                        echo -e "${BOLD}${GREEN}[1-Tap SlipNet Import Link]:${NC}\n${CYAN}${uri}${NC}\n"
+                        echo -e "${BOLD}Manual Parameters:${NC}"
+                        echo -e "  Domain:     ${domain}"
+                        [[ -n "$pubkey_b64" ]] && echo -e "  Public Key: ${pubkey_b64}"
+                    fi
                 else
                     echo -e "${RED}[!] Tunnel ${tag} not found.${NC}"
                 fi

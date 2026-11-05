@@ -5,11 +5,11 @@
     "listen_udp": "0.0.0.0:53",
     "listen_tcp": "0.0.0.0:53",
     "mode": "multi",
-    "default_tunnel": "default"
+    "default_tunnel": "dnstt"
   },
   "socks5": {
     "enabled": true,
-    "listen": "127.0.0.1:1080",
+    "listen": "0.0.0.0:1080",
     "auth": false
   },
   "stuntls": {
@@ -21,7 +21,7 @@
   },
   "udpgw": {
     "enabled": true,
-    "listen": "127.0.0.1:7300",
+    "listen": "0.0.0.0:7300",
     "max_clients": 1000
   },
   "multiplexer": {
@@ -32,18 +32,54 @@
   },
   "tunnels": [
     {
-      "tag": "dnstt-primary",
+      "tag": "dnstt",
       "transport": "dnstt",
-      "backend": "both",
-      "domain": "t.example.com",
-      "mtu": 1232,
-      "port": 5300
+      "domain": "t.<domain>",
+      "port": 5300,
+      "mtu": 1232
     },
     {
-      "tag": "stuntls-443",
+      "tag": "noizdns",
+      "transport": "noizdns",
+      "domain": "n.<domain>",
+      "port": 5301,
+      "mtu": 1232,
+      "encoding": "base36"
+    },
+    {
+      "tag": "slipstream",
+      "transport": "slipstream",
+      "domain": "s.<domain>",
+      "port": 5302
+    },
+    {
+      "tag": "vaydns",
+      "transport": "vaydns",
+      "domain": "v.<domain>",
+      "port": 5303,
+      "mtu": 1232,
+      "record_type": "txt"
+    },
+    {
+      "tag": "soar-direct",
+      "transport": "soar",
+      "backend": "direct",
+      "domain": "r.<domain>",
+      "port": 5304
+    },
+    {
+      "tag": "soar-ssh",
+      "transport": "soar",
+      "backend": "ssh",
+      "domain": "rs.<domain>",
+      "port": 5305
+    },
+    {
+      "tag": "stuntls",
       "transport": "stuntls",
       "port": 443,
-      "min_tls": "1.2"
+      "min_tls": "1.2",
+      "max_tls": "1.3"
     }
   ]
 }
