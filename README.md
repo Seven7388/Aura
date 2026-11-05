@@ -78,8 +78,19 @@
 Run the automated installer on your Ubuntu or Debian VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anonvector/slipgate/main/aura-installer.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Seven7388/Aura/main/aura-installer.sh | sudo bash
 ```
+
+> **Note for Private Repository**: If your repository is set to Private on GitHub, provide your GitHub Personal Access Token:
+> ```bash
+> curl -fsSL -H "Authorization: token YOUR_GITHUB_TOKEN" \
+>   https://raw.githubusercontent.com/Seven7388/Aura/main/aura-installer.sh | sudo bash
+> ```
+> Or clone and run locally:
+> ```bash
+> git clone https://github.com/Seven7388/Aura.git
+> cd Aura && sudo bash aura-installer.sh
+> ```
 
 Once installed, launch the interactive manager anytime:
 

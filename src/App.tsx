@@ -16,7 +16,10 @@ import {
   ArrowRight,
   ExternalLink,
   Layers,
-  Sparkles
+  Sparkles,
+  Lock,
+  Globe,
+  GitBranch
 } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -34,11 +37,15 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isZipping, setIsZipping] = useState(false);
 
-  // Quick deploy configurator state
+  // Repository & quick deploy state
+  const [githubRepo, setGithubRepo] = useState('Seven7388/Aura');
+  const [githubBranch, setGithubBranch] = useState('main');
   const [deployDomain, setDeployDomain] = useState('s.sixbravo.qzz.io');
   const [deployMtu, setDeployMtu] = useState('1232');
   const [deployPort, setDeployPort] = useState('5300');
   const [serverIp, setServerIp] = useState('141.148.15.143');
+  const [githubToken, setGithubToken] = useState('');
+  const [isPrivateRepo, setIsPrivateRepo] = useState(false);
 
   // Active files mapping
   const files: Record<TabKey, { name: string; content: string; desc: string; icon: React.ReactNode }> = {
@@ -124,7 +131,15 @@ export default function App() {
       : `# No lines match "${searchQuery}" in ${currentFile.name}`;
   }, [currentFile, searchQuery]);
 
-  const quickInstallCommand = `curl -fsSL https://raw.githubusercontent.com/anonvector/slipgate/main/aura-installer.sh | sudo bash -s -- -d "${deployDomain}" -m "${deployMtu}" -p "${deployPort}"`;
+  // Dynamically compute the installer command for Seven7388/Aura
+  const rawInstallerUrl = `https://raw.githubusercontent.com/${githubRepo}/${githubBranch}/aura-installer.sh`;
+  const flags = `-d "${deployDomain}" -m "${deployMtu}" -p "${deployPort}"`;
+  
+  const quickInstallCommand = isPrivateRepo && githubToken.trim()
+    ? `curl -fsSL -H "Authorization: token ${githubToken.trim()}" ${rawInstallerUrl} | sudo GITHUB_TOKEN="${githubToken.trim()}" bash -s -- ${flags}`
+    : `curl -fsSL ${rawInstallerUrl} | sudo bash -s -- ${flags}`;
+
+  const gitCloneCommand = `git clone https://github.com/${githubRepo}.git && cd Aura && sudo bash aura-installer.sh ${flags}`;
 
   return (
     <div className="min-h-screen bg-[#0B0F17] text-slate-200 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans">
@@ -149,8 +164,18 @@ export default function App() {
           <a href="#architecture" className="hover:text-emerald-400 transition-colors whitespace-nowrap">Architecture</a>
         </nav>
 
-        {/* Zone 3: Primary Action */}
+        {/* Zone 3: Primary Action & GitHub Link */}
         <div className="flex items-center gap-3 shrink-0">
+          <a
+            href={`https://github.com/${githubRepo}`}
+            target="_blank"
+            rel="noreferrer"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-mono transition-colors"
+          >
+            {isPrivateRepo ? <Lock className="w-3.5 h-3.5 text-amber-400" /> : <Globe className="w-3.5 h-3.5 text-emerald-400" />}
+            <span>{githubRepo}</span>
+            <ExternalLink className="w-3 h-3 text-slate-400" />
+          </a>
           <button
             onClick={downloadZipArchive}
             disabled={isZipping}
@@ -169,7 +194,10 @@ export default function App() {
             <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
               <span className="text-emerald-400 font-semibold uppercase tracking-wider">Aura Release v2.0.0</span>
               <span aria-hidden="true">·</span>
-              <span>AGPL-3.0</span>
+              <a href={`https://github.com/${githubRepo}`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-white flex items-center gap-1">
+                <GitBranch className="w-3 h-3" />
+                <span>{githubRepo}</span>
+              </a>
               <span aria-hidden="true">·</span>
               <span>Linux x86_64 / arm64</span>
             </div>
@@ -208,19 +236,73 @@ export default function App() {
                     className="w-16 bg-[#0B0F17] border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
                   />
                 </label>
+                <button
+                  type="button"
+                  onClick={() => setIsPrivateRepo(!isPrivateRepo)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    isPrivateRepo ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Lock className="w-3 h-3" />
+                  <span>Private Repo</span>
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-3 bg-[#0B0F17] border border-slate-800/80 rounded-lg p-3.5 font-mono text-xs sm:text-sm text-emerald-400 overflow-x-auto">
-              <span className="shrink-0 text-slate-600 select-none">$</span>
-              <span className="truncate flex-1 select-all">{quickInstallCommand}</span>
-              <button
-                onClick={() => copyToClipboard(quickInstallCommand, 'quick-install')}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-sans font-medium transition-colors shrink-0 shadow-sm"
-              >
-                {copiedKey === 'quick-install' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                {copiedKey === 'quick-install' ? 'Copied' : 'Copy'}
-              </button>
+            {/* Optional Private Repo Token Row */}
+            {isPrivateRepo && (
+              <div className="bg-amber-950/20 border border-amber-500/30 rounded-lg p-3 text-xs space-y-2">
+                <div className="flex items-center justify-between text-amber-300">
+                  <span className="font-semibold flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5" /> Private Repository Authentication
+                  </span>
+                  <span className="text-[11px] text-amber-400/80">GitHub Personal Access Token</span>
+                </div>
+                <input
+                  type="password"
+                  placeholder="Paste GitHub Token (ghp_... or github_pat_...) to authorize curl"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-amber-500/40 rounded px-3 py-1.5 text-slate-200 font-mono text-xs focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            )}
+
+            {/* Curl Command Display */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <span>Method 1: Direct One-Liner (curl)</span>
+                <span className="font-mono text-slate-400">{rawInstallerUrl}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 bg-[#0B0F17] border border-slate-800/80 rounded-lg p-3.5 font-mono text-xs sm:text-sm text-emerald-400 overflow-x-auto">
+                <span className="shrink-0 text-slate-600 select-none">$</span>
+                <span className="truncate flex-1 select-all">{quickInstallCommand}</span>
+                <button
+                  onClick={() => copyToClipboard(quickInstallCommand, 'quick-install')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-sans font-medium transition-colors shrink-0 shadow-sm"
+                >
+                  {copiedKey === 'quick-install' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedKey === 'quick-install' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            {/* Git Clone Alternative */}
+            <div className="space-y-1.5 pt-1 border-t border-slate-800/50">
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <span>Method 2: Git Clone & Run</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 bg-[#0B0F17] border border-slate-800/80 rounded-lg p-3 font-mono text-xs text-slate-300 overflow-x-auto">
+                <span className="shrink-0 text-slate-600 select-none">$</span>
+                <span className="truncate flex-1 select-all">{gitCloneCommand}</span>
+                <button
+                  onClick={() => copyToClipboard(gitCloneCommand, 'git-clone')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-sans font-medium transition-colors shrink-0 shadow-sm"
+                >
+                  {copiedKey === 'git-clone' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedKey === 'git-clone' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
             </div>
           </div>
 

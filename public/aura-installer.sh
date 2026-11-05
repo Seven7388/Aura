@@ -167,7 +167,7 @@ fi
 # 2. Setup DNSTT Server binary if missing
 if [[ ! -f "${BIN_DIR}/dnstt-server" ]]; then
     echo "[*] Installing dnstt-server binary..."
-    curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/anonvector/slipgate/releases/latest/download/dnstt-server-linux-amd64" 2>/dev/null || true
+    curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/Seven7388/Aura/releases/latest/download/dnstt-server-linux-amd64" 2>/dev/null || true
     if [[ ! -s "${BIN_DIR}/dnstt-server" ]]; then
         curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/sixbravo/dnstt/releases/download/v1.0.0/dnstt-server" 2>/dev/null || true
     fi
@@ -356,7 +356,11 @@ EOF
 if [[ -f "./aura" ]]; then
     cp "./aura" "${BIN_DIR}/aura"
 else
-    curl -fsSL -o "${BIN_DIR}/aura" "https://raw.githubusercontent.com/anonvector/slipgate/main/aura" 2>/dev/null || true
+    AUTH_HEADER=()
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        AUTH_HEADER=(-H "Authorization: token ${GITHUB_TOKEN}")
+    fi
+    curl -fsSL "${AUTH_HEADER[@]}" -o "${BIN_DIR}/aura" "https://raw.githubusercontent.com/Seven7388/Aura/main/aura" 2>/dev/null || true
 fi
 chmod +x "${BIN_DIR}/aura" 2>/dev/null || true
 
