@@ -131,15 +131,18 @@ aura restore <path>           # Restore server keys, certs, and configs from bac
 
 ---
 
-## Domain Configuration
+## Domain Setup (Interactive During Installation)
 
-To connect via DNS tunnels, configure the following records in your DNS manager (e.g., Cloudflare):
+Just like Unida, you don't need any domain pre-configured in the repository files or installation command. When you run `aura-installer.sh`, the setup prompts you interactively:
 
-| Type | Name | Target / IP | Proxy Status |
-| :--- | :--- | :--- | :--- |
-| **A** | `ns-aura.yourdomain.com` | `<Server IPv4>` | **DNS Only (Grey Cloud)** |
-| **NS** | `t.yourdomain.com` | `ns-aura.yourdomain.com` | **DNS Only (Grey Cloud)** |
-| **A** | `yourdomain.com` | `<Server IPv4>` | **DNS Only (Grey Cloud)** |
+1. **Option 1: Automatic Setup via Cloudflare API**  
+   Enter your Cloudflare API Token and base domain. The installer will automatically query your Zone ID and create the `A` and `NS` records on the fly.
+
+2. **Option 2: Manual Setup**  
+   The installer displays your VPS IP and instructs you on creating the two records:
+   - **A Record**: `ns-aura.yourdomain.com` → `<Server IP>` (DNS Only / Proxy OFF)
+   - **NS Record**: `t.yourdomain.com` → `ns-aura.yourdomain.com` (DNS Only / Proxy OFF)
+   Then simply enter your tunnel domain in the terminal prompt.
 
 ---
 

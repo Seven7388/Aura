@@ -169,7 +169,7 @@ if [[ ! -f "${BIN_DIR}/dnstt-server" ]]; then
     echo "[*] Installing dnstt-server binary..."
     curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/Seven7388/Aura/releases/latest/download/dnstt-server-linux-amd64" 2>/dev/null || true
     if [[ ! -s "${BIN_DIR}/dnstt-server" ]]; then
-        curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/sixbravo/dnstt/releases/download/v1.0.0/dnstt-server" 2>/dev/null || true
+        curl -fsSL -o "${BIN_DIR}/dnstt-server" "https://github.com/tladesignz/dnstt/releases/download/v1.0/dnstt-server" 2>/dev/null || true
     fi
     chmod +x "${BIN_DIR}/dnstt-server" 2>/dev/null || true
 fi

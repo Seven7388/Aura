@@ -40,10 +40,8 @@ export default function App() {
   // Repository & quick deploy state
   const [githubRepo, setGithubRepo] = useState('Seven7388/Aura');
   const [githubBranch, setGithubBranch] = useState('main');
-  const [deployDomain, setDeployDomain] = useState('s.sixbravo.qzz.io');
-  const [deployMtu, setDeployMtu] = useState('1232');
-  const [deployPort, setDeployPort] = useState('5300');
-  const [serverIp, setServerIp] = useState('141.148.15.143');
+  const [clientTestDomain, setClientTestDomain] = useState('t.yourdomain.com');
+  const [clientTestIp, setClientTestIp] = useState('127.0.0.1');
   const [githubToken, setGithubToken] = useState('');
   const [isPrivateRepo, setIsPrivateRepo] = useState(false);
 
@@ -131,15 +129,14 @@ export default function App() {
       : `# No lines match "${searchQuery}" in ${currentFile.name}`;
   }, [currentFile, searchQuery]);
 
-  // Dynamically compute the installer command for Seven7388/Aura
+  // Clean installer commands without domain flags (interactive on VPS)
   const rawInstallerUrl = `https://raw.githubusercontent.com/${githubRepo}/${githubBranch}/aura-installer.sh`;
-  const flags = `-d "${deployDomain}" -m "${deployMtu}" -p "${deployPort}"`;
   
   const quickInstallCommand = isPrivateRepo && githubToken.trim()
-    ? `curl -fsSL -H "Authorization: token ${githubToken.trim()}" ${rawInstallerUrl} | sudo GITHUB_TOKEN="${githubToken.trim()}" bash -s -- ${flags}`
-    : `curl -fsSL ${rawInstallerUrl} | sudo bash -s -- ${flags}`;
+    ? `curl -fsSL -H "Authorization: token ${githubToken.trim()}" ${rawInstallerUrl} | sudo GITHUB_TOKEN="${githubToken.trim()}" bash`
+    : `curl -fsSL ${rawInstallerUrl} | sudo bash`;
 
-  const gitCloneCommand = `git clone https://github.com/${githubRepo}.git && cd Aura && sudo bash aura-installer.sh ${flags}`;
+  const gitCloneCommand = `git clone https://github.com/${githubRepo}.git && cd Aura && sudo bash aura-installer.sh`;
 
   return (
     <div className="min-h-screen bg-[#0B0F17] text-slate-200 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans">
@@ -214,37 +211,18 @@ export default function App() {
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
               <div>
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Automated VPS One-Liner</span>
-                <p className="text-sm text-slate-300">Run this single command on your Ubuntu/Debian server to deploy the entire suite.</p>
+                <p className="text-sm text-slate-300">Run this on your server. Domain setup is prompted interactively (no domain needed in repo files).</p>
               </div>
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <label className="flex items-center gap-1.5 text-slate-400">
-                  Domain:
-                  <input
-                    type="text"
-                    value={deployDomain}
-                    onChange={(e) => setDeployDomain(e.target.value)}
-                    className="bg-[#0B0F17] border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                    placeholder="t.yourdomain.com"
-                  />
-                </label>
-                <label className="flex items-center gap-1.5 text-slate-400">
-                  MTU:
-                  <input
-                    type="text"
-                    value={deployMtu}
-                    onChange={(e) => setDeployMtu(e.target.value)}
-                    className="w-16 bg-[#0B0F17] border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
-                  />
-                </label>
+              <div className="flex items-center gap-3 text-xs">
                 <button
                   type="button"
                   onClick={() => setIsPrivateRepo(!isPrivateRepo)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
                     isPrivateRepo ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <Lock className="w-3 h-3" />
-                  <span>Private Repo</span>
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Private Repo {isPrivateRepo ? '(Token Enabled)' : ''}</span>
                 </button>
               </div>
             </div>
@@ -429,14 +407,25 @@ export default function App() {
               </h2>
               <p className="text-xs text-slate-400">Generate one-tap import URIs for the SlipNet Android VPN and desktop clients.</p>
             </div>
-            <div className="flex items-center gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <label className="text-slate-400 flex items-center gap-1.5">
+                Test Domain:
+                <input
+                  type="text"
+                  value={clientTestDomain}
+                  onChange={(e) => setClientTestDomain(e.target.value)}
+                  className="bg-[#0B0F17] border border-slate-700 rounded px-2.5 py-1 text-slate-200 font-mono text-xs w-36"
+                  placeholder="t.yourdomain.com"
+                />
+              </label>
               <label className="text-slate-400 flex items-center gap-1.5">
                 Server IP:
                 <input
                   type="text"
-                  value={serverIp}
-                  onChange={(e) => setServerIp(e.target.value)}
-                  className="bg-[#0B0F17] border border-slate-700 rounded px-2.5 py-1 text-slate-200 font-mono text-xs"
+                  value={clientTestIp}
+                  onChange={(e) => setClientTestIp(e.target.value)}
+                  className="bg-[#0B0F17] border border-slate-700 rounded px-2.5 py-1 text-slate-200 font-mono text-xs w-32"
+                  placeholder="127.0.0.1"
                 />
               </label>
             </div>
@@ -448,7 +437,7 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">DNSTT Tunnel (Curve25519)</span>
                 <button
-                  onClick={() => copyToClipboard(`slipnet://dnstt?domain=${deployDomain}&pubkey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&ns=1.1.1.1`, 'slipnet-dnstt')}
+                  onClick={() => copyToClipboard(`slipnet://dnstt?domain=${clientTestDomain}&pubkey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&ns=1.1.1.1`, 'slipnet-dnstt')}
                   className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
                 >
                   {copiedKey === 'slipnet-dnstt' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -457,7 +446,7 @@ export default function App() {
               </div>
               <p className="text-xs text-slate-400">Bypasses deep packet inspection through DNS recursive resolvers.</p>
               <div className="bg-slate-900/80 p-2.5 rounded font-mono text-xs text-slate-300 break-all select-all">
-                slipnet://dnstt?domain={deployDomain}&pubkey=&lt;server-pubkey&gt;&ns=1.1.1.1
+                slipnet://dnstt?domain={clientTestDomain}&pubkey=&lt;server-pubkey&gt;&ns=1.1.1.1
               </div>
             </div>
 
@@ -466,7 +455,7 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">StunTLS Port 443 (HTTPS)</span>
                 <button
-                  onClick={() => copyToClipboard(`slipnet://stuntls?addr=${serverIp}:443&sni=${serverIp}&insecure=1`, 'slipnet-stuntls')}
+                  onClick={() => copyToClipboard(`slipnet://stuntls?addr=${clientTestIp}:443&sni=${clientTestIp}&insecure=1`, 'slipnet-stuntls')}
                   className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
                 >
                   {copiedKey === 'slipnet-stuntls' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -475,7 +464,7 @@ export default function App() {
               </div>
               <p className="text-xs text-slate-400">Obfuscated TLS 1.2/1.3 connection forwarding to Protocol Multiplexer.</p>
               <div className="bg-slate-900/80 p-2.5 rounded font-mono text-xs text-slate-300 break-all select-all">
-                slipnet://stuntls?addr={serverIp}:443&sni={serverIp}&insecure=1
+                slipnet://stuntls?addr={clientTestIp}:443&sni={clientTestIp}&insecure=1
               </div>
             </div>
           </div>
