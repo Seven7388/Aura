@@ -22,6 +22,7 @@ import {
   GitBranch
 } from 'lucide-react';
 import JSZip from 'jszip';
+import * as ed25519 from '@noble/ed25519';
 
 // Vite raw imports for instant, reliable in-bundle access
 import readmeText from '../public/README.md?raw';
@@ -114,11 +115,10 @@ function buildSlipNetUri(options: SlipNetOptions): string {
   }
 
   const payload = fields.join('|');
-  try {
-    return `slipnet://${btoa(payload)}`;
-  } catch {
-    return `slipnet://${payload}`;
-  }
+  const encoder = new TextEncoder();
+  const data = encoder.encode(payload);
+  const base64 = btoa(String.fromCharCode(...data));
+  return `slipnet://${base64}`;
 }
 
 export default function App() {
@@ -134,6 +134,17 @@ export default function App() {
   const [clientTestIp, setClientTestIp] = useState('127.0.0.1');
   const [githubToken, setGithubToken] = useState('');
   const [isPrivateRepo, setIsPrivateRepo] = useState(false);
+  const [soarPubHex, setSoarPubHex] = useState('b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313');
+  const [soarPubB64, setSoarPubB64] = useState('tCd7Qm7FolQBkQfQUWLVrLBktDMirri+SlUaAHT1gxM=');
+
+  const generateSoarKeys = async () => {
+    const privKey = window.crypto.getRandomValues(new Uint8Array(32));
+    const pubKey = await ed25519.getPublicKeyAsync(privKey);
+    const hex = Array.from(pubKey).map(b => b.toString(16).padStart(2, '0')).join('');
+    setSoarPubHex(hex);
+    const b64 = btoa(String.fromCharCode(...pubKey));
+    setSoarPubB64(b64);
+  };
 
   // Active files mapping
   const files: Record<TabKey, { name: string; content: string; desc: string; icon: React.ReactNode }> = {
@@ -522,7 +533,7 @@ export default function App() {
                 onClick={() => {
                   const cleanDomain = clientTestDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^[tnsrvRS]\./, '') || 'yourdomain.com';
                   const dnsttKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-                  const soarB64Key = 'tCd7Qm7FolQBkQfQUWLVrLBktDMirri+SlUaAHT1gxM=';
+                  const soarB64Key = soarPubB64;
                   const allLinksText = [
                     '==================================================================',
                     '           AURA CONFIGURED ALL TUNNELS — SHARED CLIENT LINKS',
@@ -552,14 +563,14 @@ export default function App() {
                     `    ${buildSlipNetUri({ version: '29', tunnelType: 'soar', name: 'soar-direct-aura', domain: `r.${cleanDomain}`, pubkey: soarB64Key })}`,
                     `    Manual: Domain=r.${cleanDomain} | Port=UDP 5304`,
                     `    PubKey (Base64 - 44 chars): ${soarB64Key}`,
-                    `    PubKey (Hex - 64 chars)   : b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313`,
+                    `    PubKey (Hex - 64 chars)   : ${soarPubHex}`,
                     ``,
                     `[6] Soar Multipath DNS (SSH Backend):`,
                     `    1-Tap SlipNet Import Link:`,
                     `    ${buildSlipNetUri({ version: '29', tunnelType: 'soar_ssh', name: 'soar-ssh-aura', domain: `rs.${cleanDomain}`, pubkey: soarB64Key, sshEnabled: true, sshUser: 'root', sshPort: '22' })}`,
                     `    Manual: Domain=rs.${cleanDomain} | Port=UDP 5305`,
                     `    PubKey (Base64 - 44 chars): ${soarB64Key}`,
-                    `    PubKey (Hex - 64 chars)   : b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313`,
+                    `    PubKey (Hex - 64 chars)   : ${soarPubHex}`,
                     ``,
                     `[7] StunTLS (Port 443 - SSH/WS over TLS 1.2/1.3):`,
                     `    1-Tap SlipNet Import Link:`,
@@ -583,14 +594,21 @@ export default function App() {
                 {copiedKey === 'copy-all-links' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copiedKey === 'copy-all-links' ? 'All Links Copied!' : 'Copy All Links'}</span>
               </button>
+              <button
+                onClick={generateSoarKeys}
+                className="flex items-center gap-1.5 px-3 py-1 bg-purple-700 hover:bg-purple-600 text-white rounded font-medium text-xs transition-colors shadow-sm"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Regenerate Keys</span>
+              </button>
             </div>
           </div>
 
           {(() => {
             const cleanDomain = clientTestDomain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^[tnsrvRS]\./, '') || 'yourdomain.com';
             const dnsttHexKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-            const soarB64Key = 'tCd7Qm7FolQBkQfQUWLVrLBktDMirri+SlUaAHT1gxM=';
-            const soarHexKey = 'b4277b426ec5a254019107d05162d5acb874b43322aeb8be4a551a0074f58313';
+            const soarB64Key = soarPubB64;
+            const soarHexKey = soarPubHex;
 
             const uriDnstt = buildSlipNetUri({ version: '22', tunnelType: 'dnstt', name: 'dnstt-aura', domain: `t.${cleanDomain}`, pubkey: dnsttHexKey });
             const uriNoiz = buildSlipNetUri({ version: '22', tunnelType: 'sayedns', name: 'noizdns-aura', domain: `n.${cleanDomain}`, pubkey: dnsttHexKey });
