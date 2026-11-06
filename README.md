@@ -1,185 +1,424 @@
 # Aura
 
-> **Unified Tunnel & Server Management Suite for Linux**  
-> Orchestrates DNS tunnels (DNSTT, NoizDNS, Slipstream, VayDNS, Soar), HTTPS/TLS proxies (NaiveProxy, StunTLS on port 443), BadVPN UDP gateways, and multi-user authentication through a single automated management CLI.
+Unified tunnel manager for Linux servers. Manages DNS tunnels (DNSTT, NoizDNS, Slipstream, VayDNS, Soar) and HTTPS proxies (NaiveProxy) with systemd services, multi-tunnel DNS routing, and user management. Designed for use with the [AuraNet](https://github.com/Sixbravo7388/AuraNet) Android VPN app.
 
----
+[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/12767996-2dd6-42ed-89a6-5f786c4662b4.svg)](https://oosmetrics.com/repo/Sixbravo7388/aura)
 
 ## Features
 
-- **Multi-Transport Support**:
-  - **DNSTT & NoizDNS**: Curve25519-encrypted DNS tunneling with anti-censorship DPI evasion, base36/hex encoding, and CDN prefix stripping.
-  - **Slipstream**: QUIC-based DNS tunnel with TLS certificate authentication.
-  - **VayDNS**: KCP-based UDP DNS tunnel with Curve25519 cryptography, customizable record types (TXT, A, AAAA), and queue sizing.
-  - **Soar**: Multipath DNS tunnel built into the manager with both **Direct** (dial public destinations) and **SSH** backend modes.
-  - **NaiveProxy**: Caddy forward-proxy with automated Let's Encrypt TLS and probe-resistant decoy websites.
-  - **StunTLS**: SSH and WebSocket over TLS on port 443 with TLS 1.2/1.3 enforcement and traffic obfuscation.
-- **Dual Backend Routing**:
-  - Built-in Dante & Go SOCKS5 proxies (`127.0.0.1:1080`) with optional or zero authentication.
-  - OpenSSH port forwarding (`127.0.0.1:22`).
-  - Automated Protocol Multiplexer (`127.0.0.1:2222`) that inspects traffic and routes to SSH or SOCKS.
-- **BadVPN UDPGW**:
-  - UDP Gateway listening on `127.0.0.1:7300` for gaming and VoIP in HTTP Custom, HTTP Injector, and SSH VPN apps.
-- **Domain-Based DNS Routing**:
-  - Unified listener on port 53 (UDP & RFC 7766 TCP) with automated subdomain dispatch.
-- **Interactive TUI & Scriptable CLI**:
-  - Run `sudo aura` for the visual menu, or run scriptable subcommands (`aura tunnel add`, `aura diag`, `aura stats`, `aura users bulk_add`).
-- **One-Tap Client Export**:
-  - Generates `slipnet://` URIs compatible with SlipNet Android VPN and universal client profiles.
+- **Multi-transport**: DNSTT/NoizDNS (DNS tunnels with Curve25519 encryption), Slipstream (QUIC-based DNS), VayDNS (KCP-based DNS with Curve25519), Soar (multipath DNS, built in), NaiveProxy (HTTPS with Caddy), StunTLS (SSH over TLS + WebSocket)
+- **Dual backend**: Built-in SOCKS5 proxy or SSH forwarding (custom SSH port supported)
+- **DNS routing**: Single-tunnel or multi-tunnel mode with domain-based dispatch
+- **External routing**: Forward DNS queries for a domain to a custom port for user-managed protocols
+- **WARP integration**: Optional Cloudflare WARP outbound routing (see [dnstun-ezpz](https://github.com/aleskxyz/dnstun-ezpz) for an alternative approach)
+- **User management**: Multi-user SSH + SOCKS credentials (all users authenticate simultaneously), with bulk creation of up to 500 users per call
+- **Live dashboard**: Real-time TUI with CPU, RAM, traffic sparklines, per-protocol connection stats, and tunnel status
+- **Backup & restore**: Move a whole server (config, keys, certificates, users) as one file or as text to copy-paste
+- **Diagnostics**: Built-in health checks for services, ports, keys, DNS resolution, and boot persistence
+- **Interactive TUI + CLI**: Menu-driven setup or scriptable subcommands
+- **Systemd integration**: Service creation, lifecycle, and logs
+- **Auto-TLS**: Let's Encrypt via Caddy for NaiveProxy tunnels
+- **Self-update**: Version checking and binary replacement from GitHub releases
+- **Client sharing**: Generates `auranet://` URIs for one-tap app import
 
----
+## Requirements
 
-## Architecture
+- **OS**: Linux (Ubuntu 20.04+, Debian 10+, or similar)
+- **Domain**: DNS A record pointed at your server (required for DNS tunnels and NaiveProxy)
+- **Ports**: 53/udp + 53/tcp (DNS tunnels), 443/tcp (NaiveProxy, StunTLS)
 
-```
-                       ┌─────────────────────────┐
-                       │   SlipNet / VPN Client  │
-                       └────────────┬────────────┘
-                                    │
-              DNS :53 (UDP+TCP) ────┼────── HTTPS / TLS :443 (TCP)
-                    │               │               │
-┌───────────────────┼───────────────┼───────────────┼──────────────────┐
-│  AURA SERVER      ▼               │               ▼                  │
-│                                   │                                  │
-│  ┌────────────────────────────┐   │   ┌───────────────────────────┐  │
-│  │      Aura DNS Router       │   │   │     Aura StunTLS          │  │
-│  │   domain-based dispatch    │   │   │   TLS 1.2/1.3 Obfuscation │  │
-│  │   port 53 (UDP + TCP)      │   │   │   port 443 -> :2222       │  │
-│  └────────┬───────────┬───────┘   │   └─────────────┬─────────────┘  │
-│           │           │           │                 │                │
-│     ┌─────┴─────┐ ┌───┴─────┐     │                 ▼                │
-│     │ DNSTT /   │ │ Slip-   │     │   ┌───────────────────────────┐  │
-│     │ NoizDNS   │ │ stream  │     │   │   Protocol Multiplexer    │  │
-│     │ Curve25519│ │ QUIC/DNS│     │   │   port 2222               │  │
-│     └─────┬─────┘ └───┬─────┘     │   └─────────────┬─────────────┘  │
-│           │           │           │                 │                │
-│           ▼           ▼           │                 │                │
-│  ┌────────────────────────────┐   │                 │                │
-│  │        Backend Layer       │◄──┴─────────────────┘                │
-│  │                                                                   │
-│  │  ┌───────────────────────┐       ┌─────────────────────────────┐  │
-│  │  │   Dante SOCKS5 Proxy  │       │       OpenSSH Server        │  │
-│  │  │   127.0.0.1:1080      │       │       127.0.0.1:22          │  │
-│  │  └───────────────────────┘       └─────────────────────────────┘  │
-│  │                                                                   │
-│  │  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  │   BadVPN UDP Gateway: 127.0.0.1:7300 (VoIP & UDP for SSH)   │  │
-│  │  └─────────────────────────────────────────────────────────────┘  │
-│  └────────────────────────────┬──────────────────────────────────────┘
-│                               ▼
-│                       Public Internet
-└──────────────────────────────────────────────────────────────────────┘
-```
+## Quick Start
 
----
-
-## Quick Start (One-Liner Install)
-
-Run the automated installer on your Ubuntu or Debian VPS:
+**One-liner install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Seven7388/Aura/main/aura-installer.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Sixbravo7388/aura/main/install.sh | sudo bash
 ```
 
-> **Note for Private Repository**: If your repository is set to Private on GitHub, provide your GitHub Personal Access Token:
-> ```bash
-> curl -fsSL -H "Authorization: token YOUR_GITHUB_TOKEN" \
->   https://raw.githubusercontent.com/Seven7388/Aura/main/aura-installer.sh | sudo bash
-> ```
-> Or clone and run locally:
-> ```bash
-> git clone https://github.com/Seven7388/Aura.git
-> cd Aura && sudo bash aura-installer.sh
-> ```
+**Or build from source:**
 
-Once installed, launch the interactive manager anytime:
+```bash
+git clone https://github.com/Sixbravo7388/aura.git
+cd aura
+make build
+sudo ./aura install
+```
+
+**Offline install (SCP to server):**
+
+Download the binaries you need from the [latest release](https://github.com/Sixbravo7388/aura/releases):
+
+```bash
+# On your local machine — download binaries
+mkdir aura-bundle && cd aura-bundle
+curl -LO https://github.com/Sixbravo7388/aura/releases/latest/download/aura-linux-amd64
+curl -LO https://github.com/Sixbravo7388/aura/releases/latest/download/dnstt-server-linux-amd64
+curl -LO https://github.com/Sixbravo7388/aura/releases/latest/download/slipstream-server-linux-amd64
+curl -LO https://github.com/Sixbravo7388/aura/releases/latest/download/caddy-naive-linux-amd64
+
+# SCP to server
+scp * user@server:/tmp/aura/
+
+# On the server
+chmod +x /tmp/aura/*
+sudo cp /tmp/aura/aura-linux-amd64 /usr/local/bin/aura
+sudo aura install --bin-dir /tmp/aura
+```
+
+Then launch the interactive menu:
 
 ```bash
 sudo aura
 ```
 
----
+## CLI Usage
 
-## CLI Reference
+```
+aura                        # Interactive TUI menu
+aura install                # Install dependencies and configure server
+aura uninstall              # Remove all services, configs, and binaries
+aura update                 # Self-update and restart all services
+aura restart                # Restart all services (DNS router, tunnels, SOCKS)
+aura backup [file]          # Back up config, keys and users (file, or text to copy-paste)
+aura restore [file]         # Restore a backup on this server ("-" reads stdin)
+aura users                  # Manage SSH/SOCKS users and view configs
+aura users add              # Add a single user
+aura users bulk_add         # Add multiple users in one batch (random creds, up to 500)
+aura users remove           # Remove a user
+aura users list             # List users and their per-tunnel configs
+aura users configs          # Show every auranet:// config (all tunnels and users, incl. no-login Soar)
+aura stats                  # Live dashboard (CPU, RAM, traffic, connections, tunnels)
+aura diag                   # Run diagnostics (services, ports, keys, DNS, boot status)
+aura mtu [value]            # Set MTU for all DNSTT/NoizDNS/VayDNS tunnels at once
 
-Aura can be operated via its interactive menu or using scriptable CLI commands:
+# Tunnel management
+aura tunnel add             # Add tunnel(s) — supports multi-select and "both" backend
+aura tunnel edit [tag]      # Edit tunnel settings (tag, MTU, keys)
+aura tunnel remove [tag]    # Remove a tunnel
+aura tunnel remove --all    # Remove all tunnels at once
+aura tunnel start [tag]     # Start a tunnel
+aura tunnel stop [tag]      # Stop a tunnel
+aura tunnel status          # Show all tunnel statuses
+aura tunnel status [tag]    # Show tunnel details (keys, MTU, port)
+aura tunnel share [tag]     # Generate auranet:// URI for clients
+aura tunnel logs [tag]      # View tunnel logs
 
-```bash
-aura                          # Launch interactive TUI menu
-aura diag                     # Run complete health check (ports, services, certificates)
-aura stats                    # Live real-time dashboard (CPU, RAM, active connections)
-aura mtu 1232                 # Update MTU size for all active DNS tunnels
-aura restart                  # Restart all Aura systemd services
+# DNS routing
+aura router status          # Show DNS routing config
+aura router mode            # Switch between single/multi mode
+aura router switch          # Change active tunnel (single mode)
 
-# User Management
-aura users list               # List all registered proxy/SSH users
-aura users add                # Add a single user with custom credentials
-aura users bulk_add --count=20 # Bulk generate users with random passwords
-aura users remove <user>      # Remove a user
-aura users configs            # Print all client configuration URIs (slipnet://)
+# Configuration
+aura config export          # Print config.json (no keys; use backup to move a server)
+aura config import [path]   # Replace config.json (no keys)
+aura config address [ip]    # Public IP or hostname for StunTLS/SSH/SOCKS5 configs ("auto" to detect)
 
-# Tunnel Orchestration
-aura tunnel add               # Add a new tunnel (DNSTT, Slipstream, VayDNS, Soar)
-aura tunnel status            # Display all configured tunnels and parameters
-aura tunnel share <tag>       # Generate shareable slipnet:// URI for a specific tunnel
-aura tunnel remove <tag>      # Remove a tunnel profile and stop its daemon
-
-# Configuration & Backup
-aura backup [path]            # Create compressed archive of /etc/aura
-aura restore <path>           # Restore server keys, certs, and configs from backup
+# Internal (used by systemd services)
+aura dnsrouter serve        # Start DNS router
+aura socks serve            # Start built-in SOCKS5 proxy
+aura stuntls serve          # Start StunTLS proxy
 ```
 
----
+### Non-Interactive Examples
 
-## Domain Setup (Interactive During Installation)
+All commands support flags for scripting and automation. If any required flag is omitted, aura falls back to an interactive prompt.
 
-Just like Unida, you don't need any domain pre-configured in the repository files or installation command. When you run `aura-installer.sh`, the setup prompts you interactively:
+```bash
+# DNSTT tunnel
+sudo aura tunnel add \
+  --transport dnstt \
+  --backend socks \
+  --tag mydnstt \
+  --domain t.example.com
 
-1. **Option 1: Automatic Setup via Cloudflare API**  
-   Enter your Cloudflare API Token and base domain. The installer will automatically query your Zone ID and create the `A` and `NS` records on the fly.
+# DNSTT tunnel with custom Curve25519 keys
+sudo aura tunnel add \
+  --transport dnstt \
+  --backend socks \
+  --tag mytunnel \
+  --domain t.example.com \
+  --private-key <64-char-hex> \
+  --public-key <64-char-hex>   # optional, validated if provided
 
-2. **Option 2: Manual Setup**  
-   The installer displays your VPS IP and instructs you on creating the two records:
-   - **A Record**: `ns-aura.yourdomain.com` → `<Server IP>` (DNS Only / Proxy OFF)
-   - **NS Record**: `t.yourdomain.com` → `ns-aura.yourdomain.com` (DNS Only / Proxy OFF)
-   Then simply enter your tunnel domain in the terminal prompt.
+# DNSTT with both backends (creates mydnstt-socks + mydnstt-ssh)
+sudo aura tunnel add \
+  --transport dnstt \
+  --backend both \
+  --tag mydnstt \
+  --domain t.example.com
 
----
+# VayDNS tunnel (KCP + Curve25519)
+sudo aura tunnel add \
+  --transport vaydns \
+  --backend socks \
+  --tag myvaydns \
+  --domain v.example.com
 
-## All Configured Tunnels & Shared Links (Default Provisioning)
+# VayDNS with all tuning parameters
+sudo aura tunnel add \
+  --transport vaydns \
+  --backend both \
+  --tag myvaydns \
+  --domain v.example.com \
+  --record-type txt \
+  --idle-timeout 10s \
+  --keep-alive 2s \
+  --clientid-size 2 \
+  --queue-size 512
 
-Aura automatically provisions and activates all 10 tunnels upon installation. Client links are generated in **native SlipNet Base64 pipe-delimited format** (`slipnet://<base64>`), allowing seamless 1-tap clipboard import in the SlipNet Android app without decode errors:
+# Soar tunnel (built into aura, no extra binary). Direct backend: no
+# login, the server reaches public sites itself (works with stock soar clients)
+# Optional: --private-key <base64 Ed25519 seed> to import an existing key
+sudo aura tunnel add \
+  --transport soar \
+  --backend direct \
+  --tag mysoar \
+  --domain r.example.com \
+  --allow-ports 80,443
 
-| # | Transport Protocol | Port & Endpoint | 1-Tap SlipNet Import Link & Parameters |
-| :--- | :--- | :--- | :--- |
-| **1** | **DNSTT** | `UDP :53` → `127.0.0.1:5300` | `slipnet://<base64_v22_payload>`<br>Zone: `t.<domain>` \| Curve25519 PubKey (64-char Hex) |
-| **2** | **NoizDNS** | `UDP :53` → `127.0.0.1:5301` | `slipnet://<base64_v22_payload>`<br>Zone: `n.<domain>` \| Base36 encoding & CDN prefix evasion |
-| **3** | **Slipstream** | `UDP :53` → `127.0.0.1:5302` | `slipnet://<base64_v22_payload>`<br>Zone: `s.<domain>` \| SNI: `s.<domain>` \| QUIC/DNS |
-| **4** | **VayDNS** | `UDP :53` → `127.0.0.1:5303` | `slipnet://<base64_v22_payload>`<br>Zone: `v.<domain>` \| KCP protocol with TXT records |
-| **5** | **Soar Direct** | `UDP :53` → `127.0.0.1:5304` | `slipnet://<base64_v29_payload>`<br>Zone: `r.<domain>` \| Direct outbound (No user login)<br>**PubKey Base64 (44 chars)**: `soar-server pubkey`<br>**PubKey Hex (64 chars)**: 32-byte Ed25519 hex |
-| **6** | **Soar SSH** | `UDP :53` → `127.0.0.1:5305` | `slipnet://<base64_v29_payload>`<br>Zone: `rs.<domain>` \| Routed to OpenSSH backend<br>**PubKey Base64 (44 chars)** & **PubKey Hex (64 chars)** |
-| **7** | **StunTLS** | `TCP :443` → `127.0.0.1:2222` | `slipnet://<base64_v22_payload>`<br>Host: `<server_ip>:443` \| WebSocket + TLS 1.2/1.3 Obfuscation |
-| **8** | **BadVPN UDPGW**| `UDP :7300` (Direct) | Host: `<server_ip>`, Port: `7300` (Set in HTTP Custom) |
-| **9** | **Dante SOCKS5**| `TCP :1080` (Direct / No Auth)| `socks5://<server_ip>:1080` (Direct proxy) |
-| **10**| **OpenSSH** | `TCP :22` (SSH Backend) | `ssh://<server_ip>:22` (Direct port forwarding) |
+# Soar with the SSH backend: the server reaches only the SSH server, so each
+# person needs their own SSH user (AuraNet; share with 'aura tunnel share')
+sudo aura tunnel add \
+  --transport soar \
+  --backend ssh \
+  --tag mysoar-ssh \
+  --domain rs.example.com
 
-All links are automatically saved on your server at `/etc/aura/client_links.txt` and can be retrieved anytime with `sudo aura configs` or `aura tunnel share <tag>`.
+# Slipstream tunnel
+sudo aura tunnel add \
+  --transport slipstream \
+  --backend ssh \
+  --tag myslip \
+  --domain s.example.com
 
----
+# NaiveProxy tunnel
+sudo aura tunnel add \
+  --transport naive \
+  --backend socks \
+  --tag myproxy \
+  --domain example.com \
+  --email admin@example.com \
+  --decoy-url https://www.wikipedia.org
+
+# StunTLS tunnel (SSH over TLS + WebSocket)
+sudo aura tunnel add \
+  --transport stuntls \
+  --tag mytls
+
+# External DNS routing (forward queries to a custom port)
+sudo aura tunnel add \
+  --transport external \
+  --tag my-proto \
+  --domain j.example.com \
+  --port 5301
+# Queries for j.example.com route to 127.0.0.1:5301
+
+# Direct SSH / SOCKS5 transports
+sudo aura tunnel add --transport direct-ssh --tag myssh
+sudo aura tunnel add --transport direct-socks5 --tag mysocks
+
+# Rename a tunnel
+sudo aura tunnel edit --tag mydnstt --new-tag my-tunnel
+
+# Change MTU on a DNSTT tunnel
+sudo aura tunnel edit --tag mydnstt --mtu 1232
+
+# Set MTU for all DNSTT/NoizDNS/VayDNS tunnels at once (rewrites and restarts each service)
+sudo aura mtu 1200
+
+# Tune VayDNS parameters
+sudo aura tunnel edit --tag myvaydns \
+  --mtu 1232 \
+  --record-type txt \
+  --idle-timeout 10s \
+  --keep-alive 2s \
+  --clientid-size 2 \
+  --queue-size 512
+
+# View tunnel details (keys, MTU, port, status)
+sudo aura tunnel status --tag mydnstt
+
+# Share tunnel config as auranet:// URI
+sudo aura tunnel share mydnstt
+
+# Move to a new server: same keys and passwords, so client configs keep working.
+# Afterwards point the DNS records (ns.<domain>, NaiveProxy domains) at the new IP.
+ssh root@old-server aura backup - | ssh root@new-server aura restore - --yes
+
+# Bulk-add SSH/SOCKS users (random passwords, up to 500 per call)
+sudo aura users bulk_add --count=50 --prefix=user
+# Creates user001..user050 with random passwords. A single SOCKS reload
+# and WARP rule sync runs for the whole batch.
+```
+
+## Architecture
+
+```
+                       ┌──────────────────┐
+                       │  AuraNet Client  │
+                       │                  │
+                       └────────┬─────────┘
+                                │
+              DNS :53/udp+tcp ──┼────── HTTPS/TLS :443/tcp
+                    │           │           │
+┌───────────────────┼───────────┼───────────┼──────────────────┐
+│  SERVER           v           │           v                  │
+│                               │                              │
+│  ┌────────────────────────┐   │   ┌───────────────────────┐  │
+│  │      DNS Router        │   │   │     NaiveProxy        │  │
+│  │  domain-based dispatch │   │   │  Caddy + Auto-TLS     │  │
+│  │  single / multi mode   │   │   │  + decoy website      │  │
+│  │  + external routing    │   │   └───────────┬───────────┘  │
+│  └──┬────────┬────────┬───┘   │               │              │
+│     │        │        │       │   ┌───────────────────────┐  │
+│     v        v        v       │   │     StunTLS           │  │
+│  ┌──────┐┌────────┐┌──────┐   │   │  SSH over TLS + WS   │  │
+│  │DNSTT ││Slip-   ││VayDNS│   │   │  self-signed cert     │  │
+│  │NoizDN││stream  ││      │   │   └───────────┬───────────┘  │
+│  │──────││────────││──────│   │               │              │
+│  │DNS   ││QUIC    ││KCP   │   │               │              │
+│  │Curve ││TLS cert││Curve │   │               │              │
+│  │25519 ││        ││25519 │   │               │              │
+│  └──┬───┘└───┬────┘└──┬───┘   │               │              │
+│     └────────┼────────┘       │               │              │
+│              │                │               │              │
+│              v                v               v              │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │                    Backend Layer                     │    │
+│  │                                                      │    │
+│  │   ┌──────────────────┐    ┌──────────────────────┐   │    │
+│  │   │  SOCKS5 Proxy    │    │   SSH Forwarding     │   │    │
+│  │   │  built-in Go     │    │   port forwarding    │   │    │
+│  │   │  :1080           │    │   :22 (configurable) │   │    │
+│  │   └────────┬─────────┘    └──────────┬───────────┘   │    │
+│  │            └─────────┬───────────────┘               │    │
+│  └──────────────────────┼───────────────────────────────┘    │
+│                         v                                    │
+│              ┌──────────────────────┐                        │
+│              │   WARP (optional)    │                        │
+│              │  Cloudflare outbound │                        │
+│              └──────────┬───────────┘                        │
+│                         v                                    │
+│                    Internet                                  │
+└──────────────────────────────────────────────────────────────┘
+
+  systemd: aura-dnsrouter, aura-socks5, aura-{tag}
+```
+
+### Transport Types
+
+| Transport | Protocol | Port | Description |
+|-----------|----------|------|-------------|
+| **DNSTT/NoizDNS** | DNS | 53/udp | Curve25519 encrypted DNS tunnel. A single server serves both DNSTT and NoizDNS clients. NoizDNS adds DPI evasion with base36/hex encoding and CDN prefix stripping |
+| **Slipstream** | QUIC DNS | 53/udp | QUIC-based tunnel with certificate authentication |
+| **VayDNS** | KCP DNS | 53/udp | KCP-based DNS tunnel with Curve25519 encryption. Supports configurable idle timeout, keepalive, queue size, and multiple DNS record types |
+| **Soar** | DNS | 53/udp | [Soar](https://github.com/getlantern/soar) multipath DNS tunnel (X25519 + Ed25519-signed handshake), served by aura itself. Soar has no per-user login, so it has two backends. **Direct**: like soar-server, it dials the destination each stream names, limited to public addresses and the allowed ports (default `80,443`, or `any`); anyone who finds the zone can use it, and it works with stock soar clients (zone + base64 public key from `tunnel status`). **SSH**: it reaches only the SSH server, so access goes through SSH users, added and removed one by one. Both export `auranet://` configs for a AuraNet version with Soar support |
+| **NaiveProxy** | HTTPS | 443/tcp | Caddy with forwardproxy plugin. Auto-TLS via Let's Encrypt. Probe-resistant with decoy site |
+| **StunTLS** | TLS/WSS | 443/tcp | SSH over TLS + WebSocket proxy. Auto-detects WebSocket, HTTP CONNECT, raw TLS, and payload (DPI bypass) modes. Self-signed TLS cert, no domain required |
+| **External** | DNS | 53/udp | Routes DNS queries for a domain to a user-specified UDP port. No managed service — use for custom/private protocol testing |
+
+### Domain Layout
+
+Each DNS tunnel instance requires its own subdomain. When using both SOCKS and SSH backends, the install auto-generates subdomains by appending `s` to the SSH variant:
+
+| Tunnel | Domain | Backend |
+|--------|--------|---------|
+| dnstt-socks | `t.example.com` | SOCKS5 |
+| dnstt-ssh | `ts.example.com` | SSH |
+| slipstream-socks | `s.example.com` | SOCKS5 |
+| slipstream-ssh | `ss.example.com` | SSH |
+| vaydns-socks | `v.example.com` | SOCKS5 |
+| vaydns-ssh | `vs.example.com` | SSH |
+| soar-direct | `r.example.com` | Direct (dials client destinations) |
+| soar-ssh | `rs.example.com` | SSH |
+| naive-socks | `example.com` | SOCKS5 (shared domain) |
+| naive-ssh | `example.com` | SSH (shared domain) |
+
+NaiveProxy tunnels share a domain since they use HTTPS (port 443), not DNS. DNSTT and NoizDNS also share a domain — the same server handles both client types.
+
+**Required DNS records** (for the example above):
+
+```
+A   ns.example.com       → <server IP>
+NS  t.example.com        → ns.example.com
+NS  ts.example.com       → ns.example.com
+NS  s.example.com        → ns.example.com
+NS  ss.example.com       → ns.example.com
+NS  v.example.com        → ns.example.com
+NS  vs.example.com       → ns.example.com
+A   example.com           → <server IP>
+```
+
+### Routing Modes
+
+- **Single mode**: One active tunnel runs; DNS router on port 53 forwards to it
+- **Multi mode**: All tunnels run on local ports; DNS router on port 53 dispatches queries by domain. Auto-enabled when multiple DNS tunnels are created.
+
+The DNS router answers on both UDP and TCP port 53. Queries arriving over TCP (RFC 7766, pipelined) are forwarded to the tunnel over UDP and the answers returned on the same TCP connection, so every DNS tunnel works for resolvers and clients that use TCP/53 (e.g. Soar clients on networks that block UDP/53), with no change to the tunnel servers.
+
+## Client Configuration
+
+After creating a tunnel, generate a shareable config:
+
+```bash
+sudo aura tunnel share mytunnel
+```
+
+This outputs a `auranet://` URI that can be scanned or imported into the AuraNet Android app. For DNSTT tunnels, you'll be asked to choose between a DNSTT or NoizDNS client profile — both connect to the same server, but NoizDNS profiles enable DPI evasion on the client side.
+
+To print every config at once, for all tunnels and users (also in the menu under **Users → Show all configs**):
+
+```bash
+sudo aura users configs
+```
+
+### Server address (Oracle, AWS, GCP, Azure)
+
+StunTLS, direct SSH and direct SOCKS5 configs carry the server's IP, since clients connect to it directly. Cloud servers only see a private IP (e.g. `10.0.0.5`) on their network interface, so aura looks for the public one: the server's own IP when it is public, otherwise the IP that `ns.<your domain>` or a NaiveProxy domain points at. If it finds none, it asks once and saves the answer. Set or change it at any time (also in the menu under **Tunnels → Server address**):
+
+```bash
+sudo aura config address 203.0.113.7   # an IP or hostname, without a port
+sudo aura config address auto          # detect it again
+```
+
+Configs for DNS tunnels, Soar and NaiveProxy connect by domain and don't depend on it.
+
+### User Model
+
+Users are **global**, not scoped to specific tunnels or transports. `aura users add` only asks for a username and password — the protocol is a property of the tunnel, chosen at `tunnel add` time. Every user can authenticate against every tunnel using the same credentials, and `aura users list` prints one config block per (user × tunnel) pair. `aura users configs` prints them all at once, together with the configs that need no login (Soar with the direct backend), which belong to no user. The client picks which tunnel to use by importing the matching `auranet://` URI.
 
 ## File Locations
 
-| Path | Purpose |
-| :--- | :--- |
-| `/usr/local/bin/aura` | Central Aura CLI and TUI management executable |
-| `/etc/aura/config.json` | Master daemon settings and port configuration |
-| `/etc/aura/tunnels/` | Per-tunnel configurations, Curve25519 keys, and parameters |
-| `/etc/aura/certs/` | StunTLS 443 certificates (`stuntls.pem`) |
-| `/var/log/aura/` | Aura service logs |
-| `/etc/systemd/system/aura-*.service` | Systemd service units managed by Aura |
+| Path | Description |
+|------|-------------|
+| `/etc/aura/config.json` | Main configuration |
+| `/etc/aura/tunnels/` | Per-tunnel keys, certs, and configs |
+| `/usr/local/bin/aura` | Aura binary (includes built-in SOCKS5 proxy) |
+| `/usr/local/bin/dnstt-server` | DNSTT transport binary |
+| `/usr/local/bin/slipstream-server` | Slipstream transport binary |
+| `/usr/local/bin/vaydns-server` | VayDNS transport binary |
+| `/usr/local/bin/caddy-naive` | Caddy with NaiveProxy plugin |
 
----
+## Building
+
+```bash
+make build              # Build for current platform
+make build-linux        # Cross-compile for linux/amd64 and linux/arm64
+make test               # Run tests
+make release            # Build release binaries
+```
+
+## Credits
+
+Aura builds on these projects:
+
+- [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield - the DNS tunnel behind the DNSTT and NoizDNS transports, via the [tladesignz/dnstt](https://github.com/tladesignz/dnstt) fork (public domain / CC0)
+- [Slipstream](https://github.com/EndPositive/slipstream) by [EndPositive](https://github.com/EndPositive) and its Rust rewrite [slipstream-rust](https://github.com/Mygod/slipstream-rust) by [Mygod](https://github.com/Mygod) - the QUIC-over-DNS tunnel behind the Slipstream transport (Apache-2.0)
+- [VayDNS](https://github.com/net2share/vaydns) by [net2share](https://github.com/net2share) - the KCP-based DNS tunnel behind the VayDNS transport (CC0)
+- [Soar](https://github.com/getlantern/soar) by [Lantern](https://github.com/getlantern) - the multi-resolver DNS tunnel behind the Soar transport, built into aura (Apache-2.0)
+- [dnstm](https://github.com/net2share/dnstm) by [net2share](https://github.com/net2share) - the DNS tunnel manager Aura was originally built on
+- WARP integration inspired by [dnstun-ezpz](https://github.com/aleskxyz/dnstun-ezpz) by [aleskxyz](https://github.com/aleskxyz)
 
 ## License
 
-AGPL-3.0. Built for resilience and secure network freedom.
+AGPL-3.0

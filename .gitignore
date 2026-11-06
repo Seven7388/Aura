@@ -1,8 +1,24 @@
-node_modules/
-build/
-dist/
-coverage/
+# Build artifacts
+slipgate
+slipgate-linux-*
+caddy
+caddy-naive
+
+# Go
+go/
+*.o
+*.a
+
+# OS
 .DS_Store
-*.log
-.env*
-!.env.example
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/

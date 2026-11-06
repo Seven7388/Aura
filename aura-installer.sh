@@ -300,96 +300,29 @@ fi
 SOAR_PUBKEY_B64=$(cat "${KEY_DIR}/soar.pub" | tr -d ' \n\r')
 SOAR_PUBKEY_HEX=$(cat "${KEY_DIR}/soar.hex" | tr -d ' \n\r')
 
-# Helper: Generate Native SlipNet Base64 Pipe-Delimited URIs (v22 / v29)
+# Helper: Generate Native SlipNet Base64 Pipe-Delimited URIs (v16 Universal Format - 36 Fields)
 generate_slipnet_uri() {
-    local version="$1"       # "22" or "29"
-    local tunnel_type="$2"   # "dnstt", "sayedns", "ss", "vaydns", "soar", "soar_ssh", "ssh"
-    local name="$3"          # Profile Name
-    local domain="$4"        # Tunnel Domain or Server Address
-    local pubkey="${5:-}"    # Hex or Base64 Public Key
-    local ssh_enabled="${6:-0}"
-    local ssh_user="${7:-}"
-    local ssh_pass="${8:-}"
-    local ssh_port="${9:-22}"
-    local ws_enabled="${10:-0}"
+    local tunnel_type="$1"   # "dnstt", "dnstt_ssh", "sayedns", "sayedns_ssh", "ss", "slipstream_ssh", "vaydns", "soar", "soar_ssh", "ssh"
+    local name="$2"          # Profile Name (e.g. "t.domain", "ds.domain")
+    local domain="$3"        # Tunnel Domain
+    local pubkey="${4:-}"    # Hex or Base64 Public Key
+    local ssh_enabled="${5:-0}"
+    local ssh_user="${6:-}"
+    local ssh_pass="${7:-}"
+    local ssh_port="${8:-22}"
+    local ssh_host="${9:-127.0.0.1}"
+    local socks_user="${10:-}"
+    local socks_pass="${11:-}"
 
-    local total_fields=60
-    if [[ "$version" == "29" ]]; then
-        total_fields=82
+    local resolver="9.9.9.9:53:0,1.1.1.1:53:0"
+    local auth_mode="0"
+    if [[ -n "$socks_user" && -n "$socks_pass" ]]; then
+        auth_mode="1"
     fi
 
-    local -a fields
-    for ((i=0; i<total_fields; i++)); do
-        fields[i]=""
-    done
-
-    fields[0]="${version}"
-    fields[1]="${tunnel_type}"
-    fields[2]="${name}"
-    fields[3]="${domain}"
-    fields[4]="8.8.8.8:53:0"
-    fields[5]="0"
-    fields[6]="5000"
-    fields[7]="bbr"
-    fields[8]="1080"
-    fields[9]="127.0.0.1"
-    fields[10]="0"
-    fields[11]="${pubkey}"
-    fields[14]="${ssh_enabled}"
-    fields[15]="${ssh_user}"
-    fields[16]="${ssh_pass}"
-    fields[17]="${ssh_port}"
-    fields[18]="0"
-    fields[19]="127.0.0.1"
-    fields[20]="0"
-    fields[22]="udp"
-    fields[23]="password"
-    fields[27]="0"
-    fields[28]="443"
-    fields[31]="0"
-    fields[33]="0"
-    fields[34]="0"
-    fields[36]="0"
-    fields[38]="0"
-    fields[39]="0"
-    fields[40]="1080"
-    fields[41]="0"
-    fields[42]="txt"
-    fields[43]="101"
-    fields[44]="0"
-    fields[45]="0"
-    fields[46]="0"
-    fields[47]="0"
-    fields[48]="0"
-    fields[49]="0"
-    fields[50]="0"
-    fields[53]="8080"
-    fields[55]="${ws_enabled}"
-    fields[56]="/"
-    fields[57]="1"
-
-    if [[ "$version" == "29" ]]; then
-        fields[60]="roundrobin"
-        fields[61]="3"
-        fields[63]="tls"
-        fields[64]="ws"
-        fields[65]="/"
-        fields[67]="443"
-        fields[68]="1"
-        fields[69]="micro"
-        fields[70]="300"
-        fields[72]="0"
-        fields[73]="1"
-        fields[74]="0"
-        fields[75]="8"
-        fields[77]="0"
-        fields[79]="0"
-        fields[81]="auto"
-    fi
-
-    local IFS="|"
-    local payload="${fields[*]}"
-    echo "slipnet://$(echo -n "$payload" | base64 -w0 2>/dev/null || echo -n "$payload" | base64 | tr -d '\n')"
+    # v16 pipe-delimited format (36 fields, matching Android SlipNet ConfigImporter)
+    local data="16|${tunnel_type}|${name}|${domain}|${resolver}|${auth_mode}|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|${ssh_enabled}|${ssh_user}|${ssh_pass}|${ssh_port}|0|${ssh_host}|0||udp|password|||0|0|443|||0||0|0|"
+    echo "slipnet://$(echo -n "$data" | base64 -w0 2>/dev/null || echo -n "$data" | base64 | tr -d '\n')"
 }
 
 # 7. Setup Individual Multi-Tunnel Backend Daemons
@@ -664,6 +597,28 @@ cat <<EOF > "${TUNNELS_DIR}/stuntls.json"
 }
 EOF
 
+# 11.5 Configure Firewall, NAT Masquerade & Port Forwarding
+echo "[*] Configuring firewall, IP forwarding, and NAT masquerading..."
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-aura.conf
+DEFAULT_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -1)
+if [[ -n "$DEFAULT_IFACE" ]]; then
+    iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE 2>/dev/null || true
+    iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    iptables -A FORWARD -j ACCEPT 2>/dev/null || true
+fi
+
+# 11.5 Configure Firewall, NAT Masquerade & Port Forwarding
+echo "[*] Configuring firewall, IP forwarding, and NAT masquerading..."
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-aura.conf
+DEFAULT_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -1)
+if [[ -n "$DEFAULT_IFACE" ]]; then
+    iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE 2>/dev/null || true
+    iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    iptables -A FORWARD -j ACCEPT 2>/dev/null || true
+fi
+
 # 12. Enable and Start All Services
 echo "[*] Reloading systemd and starting all Aura services..."
 systemctl daemon-reload
@@ -677,14 +632,16 @@ for s in "${services_to_start[@]}"; do
 done
 systemctl restart stunnel4.service 2>/dev/null || true
 
-# Generate Native 1-Tap SlipNet Links (Base64 pipe-delimited v22/v29)
-LINK_DNSTT=$(generate_slipnet_uri "22" "dnstt" "dnstt-aura" "${DNSTT_DOMAIN}" "${DNSTT_PUBKEY}")
-LINK_NOIZ=$(generate_slipnet_uri "22" "sayedns" "noizdns-aura" "${NOIZ_DOMAIN}" "${DNSTT_PUBKEY}")
-LINK_SLIP=$(generate_slipnet_uri "22" "ss" "slipstream-aura" "${SLIP_DOMAIN}" "")
-LINK_VAY=$(generate_slipnet_uri "22" "vaydns" "vaydns-aura" "${VAY_DOMAIN}" "${VAY_PUBKEY}")
-LINK_SOAR_DIR=$(generate_slipnet_uri "29" "soar" "soar-direct-aura" "${SOAR_DIR_DOMAIN}" "${SOAR_PUBKEY_B64}")
-LINK_SOAR_SSH=$(generate_slipnet_uri "29" "soar_ssh" "soar-ssh-aura" "${SOAR_SSH_DOMAIN}" "${SOAR_PUBKEY_B64}" "1" "root" "" "22")
-LINK_STUNTLS=$(generate_slipnet_uri "22" "ssh" "stuntls-aura" "${IPV4}" "" "1" "root" "" "443" "1")
+# Generate Native 1-Tap SlipNet Links (Base64 pipe-delimited v16 - 36 Fields)
+LINK_DNSTT=$(generate_slipnet_uri "dnstt" "${DNSTT_DOMAIN}" "${DNSTT_DOMAIN}" "${DNSTT_PUBKEY}")
+LINK_DNSTT_SSH=$(generate_slipnet_uri "dnstt_ssh" "ds.${BASE_DOMAIN}" "ds.${BASE_DOMAIN}" "${DNSTT_PUBKEY}" "1" "root" "" "22")
+LINK_NOIZ=$(generate_slipnet_uri "sayedns" "${NOIZ_DOMAIN}" "${NOIZ_DOMAIN}" "${DNSTT_PUBKEY}")
+LINK_SLIP=$(generate_slipnet_uri "ss" "${SLIP_DOMAIN}" "${SLIP_DOMAIN}" "${DNSTT_PUBKEY}")
+LINK_SLIP_SSH=$(generate_slipnet_uri "slipstream_ssh" "${SLIP_DOMAIN}" "${SLIP_DOMAIN}" "${DNSTT_PUBKEY}" "1" "root" "" "22")
+LINK_VAY=$(generate_slipnet_uri "vaydns" "${VAY_DOMAIN}" "${VAY_DOMAIN}" "${VAY_PUBKEY}")
+LINK_SOAR_DIR=$(generate_slipnet_uri "soar" "${SOAR_DIR_DOMAIN}" "${SOAR_DIR_DOMAIN}" "${SOAR_PUBKEY_B64}")
+LINK_SOAR_SSH=$(generate_slipnet_uri "soar_ssh" "${SOAR_SSH_DOMAIN}" "${SOAR_SSH_DOMAIN}" "${SOAR_PUBKEY_B64}" "1" "root" "" "22")
+LINK_STUNTLS=$(generate_slipnet_uri "ssh" "${IPV4}:443" "${IPV4}" "" "1" "root" "" "443" "${IPV4}")
 
 # Prepare Shared Links Text
 LINKS_FILE="${CONFIG_DIR}/client_links.txt"
